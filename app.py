@@ -27,7 +27,7 @@ if st.button("🚀 Run QA Audit", type="primary"):
         st.stop()
 
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel('gemini-1.5-flash')
+    model = genai.GenerativeModel('gemini-2.5-flash')
 
     # Step 1: Live Link Crawling
     st.info("🔍 Crawling live links and testing 404 status codes...")
