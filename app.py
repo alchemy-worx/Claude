@@ -79,13 +79,24 @@ if st.button("🚀 Run QA Audit", type="primary"):
     [🟢 [PASS] or 🔴 [FAIL: ISSUES DETECTED]]
     * [Bolded list of failure items if FAIL, or "All parameters verified." if PASS]
 
+    ### Part 2: Deployment & Schedule Verification Table
+    | Parameter | Planned Specs (ClickUp) | Actual Scheduled (Screenshot) | Match Status |
+    | :--- | :--- | :--- | :--- |
+    | **Campaign Name** | [Name] | [Name] | OK / Mismatch |
+    | **Target Segment** | [Segment / Size] | [Segment / Size] | OK / Mismatch |
+    | **Suppressions** | [Suppressed Lists] | [Suppressed Lists] | OK / Missing Suppression |
+    | **Send Date & Time** | [Date @ Time Timezone] | [Date @ Time Timezone] | OK / Mismatch |
+
     ### Part 3: Build, Copy & Link Relevancy Log
-    * **Broken Link / 404 Check:** [Flag any status != WORKING (200)]
+    * **Broken Link / 404 Check:** 
+      - Flag any link where status is not "WORKING (200)".
+      - **CRITICAL REQUIREMENT:** For EVERY flagged link, you MUST list:
+        `* Link [ID] ("Label"): [STATUS] -> [EXACT URL]`
     * **CTA Destination Relevancy:** [Verify button label matches destination URL path]
     * **Typos & Copy Errors:** [List typos or state None]
 
     ### Part 4: Required Action Items
-    * [Clear list of fixes needed, or "No action needed. Ready to deploy."]
+    * [List clear action items including the specific URL for any broken links]
     """
 
     # Process File Input (Images, PDFs, or Word Documents)
