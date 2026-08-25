@@ -29,11 +29,18 @@ if st.button("🚀 Run QA Audit", type="primary"):
     genai.configure(api_key=api_key)
     model = genai.GenerativeModel('gemini-3.6-flash')
 
-    # Step 1: Live Link Crawling
+    # Step 1: Live Link Crawling with Browser User-Agent (Fixes 403/429 False Positives)
     st.info("🔍 Crawling live links and testing 404 status codes...")
     extracted_data = []
+    
+    # Custom headers to emulate a real desktop web browser
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
+    }
+
     try:
-        resp = requests.get(listrak_url, timeout=10)
+        resp = requests.get(listrak_url, headers=headers, timeout=10)
         soup = BeautifulSoup(resp.text, 'html.parser')
         links = soup.find_all('a')
         for idx, link in enumerate(links, 1):
@@ -46,7 +53,7 @@ if st.button("🚀 Run QA Audit", type="primary"):
             if not href or href.startswith('#') or href.startswith('mailto:'):
                 continue
             try:
-                res = requests.get(href, allow_redirects=True, timeout=8)
+                res = requests.get(href, headers=headers, allow_redirects=True, timeout=8)
                 final_url = res.url
                 status = f"WORKING (200)" if res.status_code == 200 else f"BROKEN ({res.status_code})"
             except Exception:
@@ -115,13 +122,11 @@ if st.button("🚀 Run QA Audit", type="primary"):
         multimodal_inputs.append(pdf_part)
 
     elif file_type == 'docx':
-        # Extract text from docx
         doc = docx.Document(uploaded_file)
         docx_text = "\n".join([p.text for p in doc.paragraphs if p.text.strip()])
         if docx_text:
             multimodal_inputs.append(f"Additional Text from DOCX Document:\n{docx_text}")
 
-        # Extract embedded screenshots/images from docx
         uploaded_file.seek(0)
         with zipfile.ZipFile(uploaded_file) as z:
             for filename in z.namelist():
