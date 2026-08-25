@@ -3,6 +3,9 @@ import requests
 from bs4 import BeautifulSoup
 import google.generativeai as genai
 from PIL import Image
+import io
+import zipfile
+import docx
 
 st.set_page_config(page_title="Campaign QA Auditor", layout="wide")
 st.title("📋 Campaign QA Auditor")
@@ -13,7 +16,7 @@ api_key = st.secrets.get("GEMINI_API_KEY") if "GEMINI_API_KEY" in st.secrets els
 # Inputs
 listrak_url = st.text_input("1. Listrak / ESP Preview Link")
 clickup_text = st.text_area("2. ClickUp Task Brief Text", height=150)
-uploaded_file = st.file_uploader("3. Upload ESP Scheduling Screenshot", type=["png", "jpg", "jpeg"])
+uploaded_file = st.file_uploader("3. Upload ESP Scheduling Screenshot, PDF, or Word Doc", type=["png", "jpg", "jpeg", "pdf", "docx"])
 
 if st.button("🚀 Run QA Audit", type="primary"):
     if not api_key:
@@ -55,7 +58,6 @@ if st.button("🚀 Run QA Audit", type="primary"):
         st.error(f"Error fetching preview link: {e}")
 
     # Step 2: Prepare Gemini Audit Prompt
-    image = Image.open(uploaded_file)
     prompt = f"""
     # Strict Constraints
     1. DO NOT write introductory text or setups.
@@ -70,20 +72,12 @@ if st.button("🚀 Run QA Audit", type="primary"):
     - **Live Link Crawl Results:**
     {extracted_data}
 
-    - **ESP Scheduling Screenshot:** Attached image.
+    - **ESP Scheduling Screenshot / Document:** Attached below.
 
     # Mandatory Output Format:
     ### Part 1: Master QA Status Banner
     [🟢 [PASS] or 🔴 [FAIL: ISSUES DETECTED]]
     * [Bolded list of failure items if FAIL, or "All parameters verified." if PASS]
-
-    ### Part 2: Deployment & Schedule Verification Table
-    | Parameter | Planned Specs (ClickUp) | Actual Scheduled (Screenshot) | Match Status |
-    | :--- | :--- | :--- | :--- |
-    | **Campaign Name** | [Name] | [Name] | OK / Mismatch |
-    | **Target Segment** | [Segment / Size] | [Segment / Size] | OK / Mismatch |
-    | **Suppressions** | [Suppressed Lists] | [Suppressed Lists] | OK / Missing Suppression |
-    | **Send Date & Time** | [Date @ Time Timezone] | [Date @ Time Timezone] | OK / Mismatch |
 
     ### Part 3: Build, Copy & Link Relevancy Log
     * **Broken Link / 404 Check:** [Flag any status != WORKING (200)]
@@ -94,10 +88,44 @@ if st.button("🚀 Run QA Audit", type="primary"):
     * [Clear list of fixes needed, or "No action needed. Ready to deploy."]
     """
 
+    # Process File Input (Images, PDFs, or Word Documents)
+    multimodal_inputs = [prompt]
+    file_type = uploaded_file.name.split('.')[-1].lower()
+
+    if file_type in ['png', 'jpg', 'jpeg']:
+        image = Image.open(uploaded_file)
+        multimodal_inputs.append(image)
+
+    elif file_type == 'pdf':
+        pdf_part = {
+            "mime_type": "application/pdf",
+            "data": uploaded_file.getvalue()
+        }
+        multimodal_inputs.append(pdf_part)
+
+    elif file_type == 'docx':
+        # Extract text from docx
+        doc = docx.Document(uploaded_file)
+        docx_text = "\n".join([p.text for p in doc.paragraphs if p.text.strip()])
+        if docx_text:
+            multimodal_inputs.append(f"Additional Text from DOCX Document:\n{docx_text}")
+
+        # Extract embedded screenshots/images from docx
+        uploaded_file.seek(0)
+        with zipfile.ZipFile(uploaded_file) as z:
+            for filename in z.namelist():
+                if filename.startswith('word/media/'):
+                    image_bytes = z.read(filename)
+                    try:
+                        img = Image.open(io.BytesIO(image_bytes))
+                        multimodal_inputs.append(img)
+                    except Exception:
+                        pass
+
     # Step 3: Run Gemini AI Analysis
     st.info("🤖 Analyzing campaign assets with Gemini AI...")
     try:
-        response = model.generate_content([prompt, image])
+        response = model.generate_content(multimodal_inputs)
         st.markdown("---")
         st.markdown(response.text)
     except Exception as e:
