@@ -49,7 +49,7 @@ if st.button("🚀 Run QA Audit", type="primary"):
     # Step 1: HTML Crawling & Alt-Tag Extraction (Inside auto-clearing spinner)
     with st.spinner("🔍 Crawling live links, extracting image <alt> tags, and auditing button destinations..."):
         try:
-            resp = requests.get(listrak_url, headers=headers, timeout=10)
+            resp = requests.get(listrak_url, headers=headers, timeout=30)
             soup = BeautifulSoup(resp.text, 'html.parser')
             
             # Audit all <img> tags for missing or blank alt attributes
