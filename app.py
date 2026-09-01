@@ -263,11 +263,25 @@ if st.button("🚀 Run QA Audit", type="primary"):
                     except Exception:
                         pass
 
-    # Step 3: Run Gemini AI Analysis (Auto-Clearing Spinner)
+    # Step 3: Run Gemini AI Analysis (Auto-Clearing Spinner + 429 Auto-Retry)
     with st.spinner("🤖 Analyzing campaign assets with Gemini AI..."):
-        try:
-            response = model.generate_content(multimodal_inputs)
-            st.markdown("---")
-            st.markdown(response.text)
-        except Exception as e:
-            st.error(f"Gemini API Error: {e}")
+        import time
+        max_retries = 3
+        
+        for attempt in range(max_retries):
+            try:
+                response = model.generate_content(multimodal_inputs)
+                st.markdown("---")
+                st.markdown(response.text)
+                break
+            except Exception as e:
+                err_msg = str(e)
+                if "429" in err_msg and attempt < max_retries - 1:
+                    # Pause for 15 seconds if hitting free-tier rate limits before retrying
+                    time.sleep(15)
+                    continue
+                else:
+                    st.error(f"Gemini API Error: {err_msg}")
+                    if "429" in err_msg:
+                        st.info("💡 **Tip:** You have reached the Free Tier request limit. Please wait 1 minute before running another audit, or upgrade your API Key in Google AI Studio.")
+                    break
