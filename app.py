@@ -168,13 +168,14 @@ if st.button("🚀 Run QA Audit", type="primary"):
     # SPECIAL BUSINESS RULES:
     1. **DATE YEAR DEFAULT:** If a date in the ClickUp brief lacks an explicit year (e.g. "8/24" or "08/24"), ASSUME IT MEANS THE CURRENT YEAR ({CURRENT_YEAR}). Do NOT flag a year mismatch if the ESP scheduled year is {CURRENT_YEAR}.
     2. **CREATIVE VS BUILD MATCH:** Compare the ESP preview build visual against the Approved Creative (if attached). Flag any discrepancy in design, imagery, layout, or copy.
-    3. **STRICT IMAGE ALT CHECK & URL REQUIREMENT:** Review the extracted `<img>` alt tags below (tracking pixels have already been filtered out). For ANY content image missing an `alt` attribute, having an empty `alt=""`, or having incorrect `alt` text, YOU MUST STRICTLY INCLUDE THE EXACT IMAGE URL IN THE AUDIT REPORT. 
+    3. **SEEDLIST EXCEPTION RULE FOR EXTRA SEGMENTS:** Check if any segment booked in ESP is missing from the ClickUp brief. If the ONLY unrequested/extra segment contains the word "seedlist" (case-insensitive, e.g., "Seedlist", "Seedlist_", "Seedlist-Ezcontacts"), flag/note it in the log as an extra seedlist segment, BUT mark the Target Segments Match Status in Part 2 as **OK** (or `OK (Includes Seedlist)`). Do NOT trigger a Master Audit Failure (🔴 [FAIL]) solely for a Seedlist segment.
+    4. **STRICT IMAGE ALT CHECK & URL REQUIREMENT:** Review the extracted `<img>` alt tags below (tracking pixels have already been filtered out). For ANY content image missing an `alt` attribute, having an empty `alt=""`, or having incorrect `alt` text, YOU MUST STRICTLY INCLUDE THE EXACT IMAGE URL IN THE AUDIT REPORT. 
        - Required Format: `* Image #[ID] ([EXACT IMAGE URL]): [SPECIFIC ISSUE]`
-    4. **EMAIL LINK PRINTING:** NEVER print `[email protected]`. ALWAYS print the explicit `mailto:address@domain.com` URL extracted in the Live Link Crawl Results.
-    5. **IGNORE SOCIAL MEDIA STATUS 400/403/429:** Links marked as "WORKING (Social Media Link)" or "PROTECTED / FIREWALL" are valid and must NOT be flagged as broken.
+    5. **EMAIL LINK PRINTING:** NEVER print `[email protected]`. ALWAYS print the explicit `mailto:address@domain.com` URL extracted in the Live Link Crawl Results.
+    6. **IGNORE SOCIAL MEDIA STATUS 400/403/429:** Links marked as "WORKING (Social Media Link)" or "PROTECTED / FIREWALL" are valid and must NOT be flagged as broken.
 
     # MANDATORY CHECKPOINTS:
-    - Segment Mismatches / Missing Segments / Extra Segments
+    - Segment Mismatches / Missing Segments / Extra Segments (Apply Seedlist Exception Rule)
     - Missing or Incorrect Suppressions
     - Send Date / Time / Timezone
     - Campaign Naming Conventions
@@ -210,7 +211,7 @@ if st.button("🚀 Run QA Audit", type="primary"):
     | **Creative vs Build Match** | [Approved Mockup] | [Preview Build] | OK / ❌ Mismatch |
     | **Campaign Name** | [Name] | [Name] | OK / ❌ Mismatch |
     | **A/B Test Setup** | [Single / A/B] | [Single / A/B] | OK / ❌ Mismatch |
-    | **Target Segments** | [Segments] | [Segments] | OK / ❌ Missing or Extra |
+    | **Target Segments** | [Segments] | [Segments] | OK / OK (Includes Seedlist) / ❌ Missing or Extra |
     | **Suppressions** | [Suppressed Lists] | [Suppressed Lists] | OK / ❌ Missing or Wrong |
     | **Send Date & Time** | [Date @ Time Timezone] | [Date @ Time Timezone] | OK / ❌ Mismatch |
     | **Subject Line** | [Brief Subject] | [Actual Subject] | OK / ❌ Mismatch |
