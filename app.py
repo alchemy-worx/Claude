@@ -8,6 +8,7 @@ import zipfile
 import docx
 import urllib.parse
 from datetime import datetime
+import time
 
 st.set_page_config(page_title="Campaign QA Auditor", layout="wide")
 st.title("📋 Campaign QA Auditor")
@@ -161,21 +162,24 @@ if st.button("🚀 Run QA Audit", type="primary"):
         except Exception as e:
             st.error(f"Error fetching preview link: {e}")
 
-    # Step 2: Build Prompt
+    # Step 2: Build Strict Prompt with 1:1 Segment Name Matching
     prompt = f"""
     You are a strict, zero-tolerance Email Campaign QA Auditor.
 
     # SPECIAL BUSINESS RULES:
     1. **DATE YEAR DEFAULT:** If a date in the ClickUp brief lacks an explicit year (e.g. "8/24" or "08/24"), ASSUME IT MEANS THE CURRENT YEAR ({CURRENT_YEAR}). Do NOT flag a year mismatch if the ESP scheduled year is {CURRENT_YEAR}.
     2. **CREATIVE VS BUILD MATCH:** Compare the ESP preview build visual against the Approved Creative (if attached). Flag any discrepancy in design, imagery, layout, or copy.
-    3. **SEEDLIST EXCEPTION RULE FOR EXTRA SEGMENTS:** Check if any segment booked in ESP is missing from the ClickUp brief. If the ONLY unrequested/extra segment contains the word "seedlist" (case-insensitive, e.g., "Seedlist", "Seedlist_", "Seedlist-Ezcontacts"), flag/note it in the log as an extra seedlist segment, BUT mark the Target Segments Match Status in Part 2 as **OK** (or `OK (Includes Seedlist)`). Do NOT trigger a Master Audit Failure (🔴 [FAIL]) solely for a Seedlist segment.
+    3. **STRICT 1:1 SEGMENT NAME MATCHING:**
+       - Compare EVERY segment name, prefix, suffix, and numerical code listed in the ClickUp brief against the actual segments booked in ESP.
+       - If ANY briefed segment name is missing, renamed, altered, misspelled, or uses a wrong prefix/suffix code (e.g., Brief asks for `SLL-01-MVB-PLP` but ESP shows `SLL-01-MVB-CLP`), YOU MUST FLAG THIS AS A CRITICAL MISMATCH (`❌ Segment Name Mismatch`) and mark Part 1 as `🔴 [FAIL: ISSUES DETECTED]`.
+       - **SEEDLIST EXCEPTION:** Unrequested extra segments containing "seedlist" (e.g., "Seedlist-Ezcontacts") are acceptable ONLY IF all briefed target segment names match 100% identically. If any target segment was renamed or altered, DO NOT give an OK status.
     4. **STRICT IMAGE ALT CHECK & URL REQUIREMENT:** Review the extracted `<img>` alt tags below (tracking pixels have already been filtered out). For ANY content image missing an `alt` attribute, having an empty `alt=""`, or having incorrect `alt` text, YOU MUST STRICTLY INCLUDE THE EXACT IMAGE URL IN THE AUDIT REPORT. 
        - Required Format: `* Image #[ID] ([EXACT IMAGE URL]): [SPECIFIC ISSUE]`
     5. **EMAIL LINK PRINTING:** NEVER print `[email protected]`. ALWAYS print the explicit `mailto:address@domain.com` URL extracted in the Live Link Crawl Results.
     6. **IGNORE SOCIAL MEDIA STATUS 400/403/429:** Links marked as "WORKING (Social Media Link)" or "PROTECTED / FIREWALL" are valid and must NOT be flagged as broken.
 
     # MANDATORY CHECKPOINTS:
-    - Segment Mismatches / Missing Segments / Extra Segments (Apply Seedlist Exception Rule)
+    - Segment Mismatches / Missing Segments / Extra Segments / Renamed Segments
     - Missing or Incorrect Suppressions
     - Send Date / Time / Timezone
     - Campaign Naming Conventions
@@ -211,7 +215,7 @@ if st.button("🚀 Run QA Audit", type="primary"):
     | **Creative vs Build Match** | [Approved Mockup] | [Preview Build] | OK / ❌ Mismatch |
     | **Campaign Name** | [Name] | [Name] | OK / ❌ Mismatch |
     | **A/B Test Setup** | [Single / A/B] | [Single / A/B] | OK / ❌ Mismatch |
-    | **Target Segments** | [Segments] | [Segments] | OK / OK (Includes Seedlist) / ❌ Missing or Extra |
+    | **Target Segments** | [Segments] | [Segments] | OK / ❌ Segment Name Mismatch |
     | **Suppressions** | [Suppressed Lists] | [Suppressed Lists] | OK / ❌ Missing or Wrong |
     | **Send Date & Time** | [Date @ Time Timezone] | [Date @ Time Timezone] | OK / ❌ Mismatch |
     | **Subject Line** | [Brief Subject] | [Actual Subject] | OK / ❌ Mismatch |
@@ -263,11 +267,9 @@ if st.button("🚀 Run QA Audit", type="primary"):
                     except Exception:
                         pass
 
-    # Step 3: Run Gemini AI Analysis (Auto-Clearing Spinner + 429 Auto-Retry)
+    # Step 3: Run Gemini AI Analysis (Auto-Clearing Spinner + 429 Retry Protection)
     with st.spinner("🤖 Analyzing campaign assets with Gemini AI..."):
-        import time
         max_retries = 3
-        
         for attempt in range(max_retries):
             try:
                 response = model.generate_content(multimodal_inputs)
@@ -277,7 +279,6 @@ if st.button("🚀 Run QA Audit", type="primary"):
             except Exception as e:
                 err_msg = str(e)
                 if "429" in err_msg and attempt < max_retries - 1:
-                    # Pause for 15 seconds if hitting free-tier rate limits before retrying
                     time.sleep(15)
                     continue
                 else:
