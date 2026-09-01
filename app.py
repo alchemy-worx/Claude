@@ -27,6 +27,15 @@ uploaded_file = st.file_uploader("4. Upload ESP Scheduling Screenshot, PDF, or W
 
 SOCIAL_DOMAINS = ['facebook.com', 'instagram.com', 'twitter.com', 'x.com', 'linkedin.com', 'pinterest.com', 'youtube.com', 'tiktok.com']
 
+def decode_cloudflare_email(encoded_string):
+    """Decodes Cloudflare obfuscated email hex strings into plain text."""
+    try:
+        r = int(encoded_string[:2], 16)
+        email = "".join([chr(int(encoded_string[i:i+2], 16) ^ r) for i in range(2, len(encoded_string), 2)])
+        return email
+    except Exception:
+        return None
+
 if st.button("🚀 Run QA Audit", type="primary"):
     if not api_key:
         st.error("Please provide a Gemini API Key.")
@@ -46,13 +55,13 @@ if st.button("🚀 Run QA Audit", type="primary"):
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
     }
 
-    # Step 1: HTML Crawling & Alt-Tag Extraction (30s Timeout + Auto-Clearing Spinner)
-    with st.spinner("🔍 Crawling live links, filtering tracking pixels, and auditing button destinations..."):
+    # Step 1: HTML Crawling, Alt-Tag Extraction & Email Decoding
+    with st.spinner("🔍 Crawling live links, decoding email links, and auditing button destinations..."):
         try:
             resp = requests.get(listrak_url, headers=headers, timeout=30)
             soup = BeautifulSoup(resp.text, 'html.parser')
             
-            # Audit <img> tags for missing/blank alt attributes, IGNORED FOR TRACKING PIXELS
+            # Audit <img> tags for missing/blank alt attributes (filtering out tracking pixels)
             images = soup.find_all('img')
             for idx, img in enumerate(images, 1):
                 src = img.get('src', 'N/A').strip()
@@ -62,7 +71,7 @@ if st.button("🚀 Run QA Audit", type="primary"):
                 style = str(img.get('style', '')).lower().replace(' ', '')
                 src_lower = src.lower()
 
-                # Identify tracking pixels by dimensions or standard tracking URL patterns
+                # Filter tracking pixels
                 is_tracking_pixel = (
                     width in ['0', '1'] or height in ['0', '1'] or
                     'width:1px' in style or 'height:1px' in style or
@@ -72,7 +81,6 @@ if st.button("🚀 Run QA Audit", type="primary"):
                     '/q/' in src_lower
                 )
 
-                # Skip tracking pixels entirely from alt tag audit
                 if is_tracking_pixel:
                     continue
 
@@ -91,12 +99,39 @@ if st.button("🚀 Run QA Audit", type="primary"):
                 img = link.find('img')
                 alt = img.get('alt', '').strip() if img else ''
                 label = text or alt or "Unlabeled Image/Button"
+
+                # Check for Cloudflare email obfuscation
+                cf_email = None
+                if '/email-protection' in href and '#' in href:
+                    hex_str = href.split('#')[-1]
+                    cf_email = decode_cloudflare_email(hex_str)
+                elif link.get('data-cfemail'):
+                    cf_email = decode_cloudflare_email(link.get('data-cfemail'))
+
+                if cf_email:
+                    extracted_data.append({
+                        "id": idx, 
+                        "label": label, 
+                        "final_url": f"mailto:{cf_email}", 
+                        "status": f"WORKING (Email Link: mailto:{cf_email})"
+                    })
+                    continue
+
+                # Handle standard mailto links
+                if href.startswith('mailto:'):
+                    extracted_data.append({
+                        "id": idx, 
+                        "label": label, 
+                        "final_url": href, 
+                        "status": f"WORKING (Email Link: {href})"
+                    })
+                    continue
                 
                 if not href or href == '#' or href.startswith('javascript:'):
                     extracted_data.append({"id": idx, "label": label, "final_url": "NONE", "status": "NO LINK / MISSING HREF"})
                     continue
                     
-                if href.startswith('mailto:') or href.startswith('tel:'):
+                if href.startswith('tel:'):
                     extracted_data.append({"id": idx, "label": label, "final_url": href, "status": "WORKING (Protocol Link)"})
                     continue
 
@@ -135,7 +170,8 @@ if st.button("🚀 Run QA Audit", type="primary"):
     2. **CREATIVE VS BUILD MATCH:** Compare the ESP preview build visual against the Approved Creative (if attached). Flag any discrepancy in design, imagery, layout, or copy.
     3. **STRICT IMAGE ALT CHECK & URL REQUIREMENT:** Review the extracted `<img>` alt tags below (tracking pixels have already been filtered out). For ANY content image missing an `alt` attribute, having an empty `alt=""`, or having incorrect `alt` text, YOU MUST STRICTLY INCLUDE THE EXACT IMAGE URL IN THE AUDIT REPORT. 
        - Required Format: `* Image #[ID] ([EXACT IMAGE URL]): [SPECIFIC ISSUE]`
-    4. **IGNORE SOCIAL MEDIA STATUS 400/403/429:** Links marked as "WORKING (Social Media Link)" or "PROTECTED / FIREWALL" are valid and must NOT be flagged as broken.
+    4. **EMAIL LINK PRINTING:** NEVER print `[email protected]`. ALWAYS print the explicit `mailto:address@domain.com` URL extracted in the Live Link Crawl Results.
+    5. **IGNORE SOCIAL MEDIA STATUS 400/403/429:** Links marked as "WORKING (Social Media Link)" or "PROTECTED / FIREWALL" are valid and must NOT be flagged as broken.
 
     # MANDATORY CHECKPOINTS:
     - Segment Mismatches / Missing Segments / Extra Segments
