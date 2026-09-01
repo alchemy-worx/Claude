@@ -16,7 +16,7 @@ st.title("📋 Campaign QA Auditor")
 api_key = st.secrets.get("GEMINI_API_KEY") if "GEMINI_API_KEY" in st.secrets else st.sidebar.text_input("Gemini API Key", type="password")
 
 # Current Year Context
-CURRENT_YEAR = datetime.now().year  # 2026
+CURRENT_YEAR = datetime.now().year
 
 # Inputs
 st.subheader("Campaign Inputs")
@@ -38,8 +38,6 @@ if st.button("🚀 Run QA Audit", type="primary"):
     genai.configure(api_key=api_key)
     model = genai.GenerativeModel('gemini-3.6-flash')
 
-    # Step 1: HTML Crawling & Alt-Tag Extraction
-    st.info("🔍 Crawling live links, extracting image <alt> tags, and auditing button destinations...")
     extracted_data = []
     image_alt_audit = []
     
@@ -48,67 +46,69 @@ if st.button("🚀 Run QA Audit", type="primary"):
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
     }
 
-    try:
-        resp = requests.get(listrak_url, headers=headers, timeout=10)
-        soup = BeautifulSoup(resp.text, 'html.parser')
-        
-        # Audit all <img> tags for missing or blank alt attributes
-        images = soup.find_all('img')
-        for idx, img in enumerate(images, 1):
-            src = img.get('src', 'N/A')
-            alt = img.get('alt')
-            if alt is None:
-                image_alt_audit.append(f"Image #{idx} ({src}): MISSING ALT ATTRIBUTE")
-            elif alt.strip() == "":
-                image_alt_audit.append(f"Image #{idx} ({src}): EMPTY ALT ATTRIBUTE (alt=\"\")")
-            else:
-                image_alt_audit.append(f"Image #{idx} ({src}): alt=\"{alt.strip()}\"")
-
-        # Audit <a> links
-        links = soup.find_all('a')
-        for idx, link in enumerate(links, 1):
-            href = link.get('href', '').strip()
-            text = link.get_text(strip=True)
-            img = link.find('img')
-            alt = img.get('alt', '').strip() if img else ''
-            label = text or alt or "Unlabeled Image/Button"
+    # Step 1: HTML Crawling & Alt-Tag Extraction (Inside auto-clearing spinner)
+    with st.spinner("🔍 Crawling live links, extracting image <alt> tags, and auditing button destinations..."):
+        try:
+            resp = requests.get(listrak_url, headers=headers, timeout=10)
+            soup = BeautifulSoup(resp.text, 'html.parser')
             
-            if not href or href == '#' or href.startswith('javascript:'):
-                extracted_data.append({"id": idx, "label": label, "final_url": "NONE", "status": "NO LINK / MISSING HREF"})
-                continue
-                
-            if href.startswith('mailto:') or href.startswith('tel:'):
-                extracted_data.append({"id": idx, "label": label, "final_url": href, "status": "WORKING (Protocol Link)"})
-                continue
-
-            parsed = urllib.parse.urlparse(href)
-            domain = parsed.netloc.lower()
-
-            # Catch Social Media Links and prevent 400/403/429 false positives
-            if any(sd in domain for sd in SOCIAL_DOMAINS):
-                extracted_data.append({"id": idx, "label": label, "final_url": href, "status": "WORKING (Social Media Link)"})
-                continue
-
-            try:
-                res = requests.get(href, headers=headers, allow_redirects=True, timeout=8)
-                if res.status_code == 200:
-                    status = "WORKING (200)"
-                elif res.status_code == 404:
-                    status = "BROKEN (404 Page Not Found)"
-                elif res.status_code in [400, 403, 429]:
-                    status = "PROTECTED / FIREWALL (Valid in browser)"
+            # Audit all <img> tags for missing or blank alt attributes
+            images = soup.find_all('img')
+            for idx, img in enumerate(images, 1):
+                src = img.get('src', 'N/A')
+                alt = img.get('alt')
+                if alt is None:
+                    image_alt_audit.append(f"Image #{idx} ({src}): MISSING ALT ATTRIBUTE")
+                elif alt.strip() == "":
+                    image_alt_audit.append(f"Image #{idx} ({src}): EMPTY ALT ATTRIBUTE (alt=\"\")")
                 else:
-                    status = f"HTTP STATUS {res.status_code}"
-                final_url = res.url
-            except Exception:
-                final_url = href
-                status = "ERROR / TIMEOUT"
+                    image_alt_audit.append(f"Image #{idx} ({src}): alt=\"{alt.strip()}\"")
 
-            extracted_data.append({"id": idx, "label": label, "final_url": final_url, "status": status})
-    except Exception as e:
-        st.error(f"Error fetching preview link: {e}")
+            # Audit <a> links
+            links = soup.find_all('a')
+            for idx, link in enumerate(links, 1):
+                href = link.get('href', '').strip()
+                text = link.get_text(strip=True)
+                img = link.find('img')
+                alt = img.get('alt', '').strip() if img else ''
+                label = text or alt or "Unlabeled Image/Button"
+                
+                if not href or href == '#' or href.startswith('javascript:'):
+                    extracted_data.append({"id": idx, "label": label, "final_url": "NONE", "status": "NO LINK / MISSING HREF"})
+                    continue
+                    
+                if href.startswith('mailto:') or href.startswith('tel:'):
+                    extracted_data.append({"id": idx, "label": label, "final_url": href, "status": "WORKING (Protocol Link)"})
+                    continue
 
-    # Step 2: Strict Prompt with New Rules
+                parsed = urllib.parse.urlparse(href)
+                domain = parsed.netloc.lower()
+
+                # Catch Social Media Links and prevent 400/403/429 false positives
+                if any(sd in domain for sd in SOCIAL_DOMAINS):
+                    extracted_data.append({"id": idx, "label": label, "final_url": href, "status": "WORKING (Social Media Link)"})
+                    continue
+
+                try:
+                    res = requests.get(href, headers=headers, allow_redirects=True, timeout=8)
+                    if res.status_code == 200:
+                        status = "WORKING (200)"
+                    elif res.status_code == 404:
+                        status = "BROKEN (404 Page Not Found)"
+                    elif res.status_code in [400, 403, 429]:
+                        status = "PROTECTED / FIREWALL (Valid in browser)"
+                    else:
+                        status = f"HTTP STATUS {res.status_code}"
+                    final_url = res.url
+                except Exception:
+                    final_url = href
+                    status = "ERROR / TIMEOUT"
+
+                extracted_data.append({"id": idx, "label": label, "final_url": final_url, "status": status})
+        except Exception as e:
+            st.error(f"Error fetching preview link: {e}")
+
+    # Step 2: Build Strict Prompt
     prompt = f"""
     You are a strict, zero-tolerance Email Campaign QA Auditor.
 
@@ -177,7 +177,6 @@ if st.button("🚀 Run QA Audit", type="primary"):
     # Process File Inputs (Creative + Schedule Document)
     multimodal_inputs = [prompt]
 
-    # Process Creative File (Field 1) if uploaded
     if creative_file:
         c_type = creative_file.name.split('.')[-1].lower()
         if c_type in ['png', 'jpg', 'jpeg']:
@@ -187,7 +186,6 @@ if st.button("🚀 Run QA Audit", type="primary"):
             multimodal_inputs.append("Approved Creative Document (PDF):")
             multimodal_inputs.append({"mime_type": "application/pdf", "data": creative_file.getvalue()})
 
-    # Process ESP Schedule File (Field 4)
     s_type = uploaded_file.name.split('.')[-1].lower()
     if s_type in ['png', 'jpg', 'jpeg']:
         multimodal_inputs.append("ESP Scheduling Screenshot:")
@@ -209,11 +207,11 @@ if st.button("🚀 Run QA Audit", type="primary"):
                     except Exception:
                         pass
 
-    # Step 3: Run Gemini AI Analysis
-    st.info("🤖 Analyzing campaign assets with Gemini AI...")
-    try:
-        response = model.generate_content(multimodal_inputs)
-        st.markdown("---")
-        st.markdown(response.text)
-    except Exception as e:
-        st.error(f"Gemini API Error: {e}")
+    # Step 3: Run Gemini AI Analysis (Inside auto-clearing spinner)
+    with st.spinner("🤖 Analyzing campaign assets with Gemini AI..."):
+        try:
+            response = model.generate_content(multimodal_inputs)
+            st.markdown("---")
+            st.markdown(response.text)
+        except Exception as e:
+            st.error(f"Gemini API Error: {e}")
