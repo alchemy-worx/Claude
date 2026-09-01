@@ -46,7 +46,7 @@ if st.button("🚀 Run QA Audit", type="primary"):
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
     }
 
-    # Step 1: HTML Crawling & Alt-Tag Extraction (Inside auto-clearing spinner)
+    # Step 1: HTML Crawling & Alt-Tag Extraction (30s Timeout + Auto-Clearing Spinner)
     with st.spinner("🔍 Crawling live links, extracting image <alt> tags, and auditing button destinations..."):
         try:
             resp = requests.get(listrak_url, headers=headers, timeout=30)
@@ -55,7 +55,7 @@ if st.button("🚀 Run QA Audit", type="primary"):
             # Audit all <img> tags for missing or blank alt attributes
             images = soup.find_all('img')
             for idx, img in enumerate(images, 1):
-                src = img.get('src', 'N/A')
+                src = img.get('src', 'N/A').strip()
                 alt = img.get('alt')
                 if alt is None:
                     image_alt_audit.append(f"Image #{idx} ({src}): MISSING ALT ATTRIBUTE")
@@ -84,13 +84,12 @@ if st.button("🚀 Run QA Audit", type="primary"):
                 parsed = urllib.parse.urlparse(href)
                 domain = parsed.netloc.lower()
 
-                # Catch Social Media Links and prevent 400/403/429 false positives
                 if any(sd in domain for sd in SOCIAL_DOMAINS):
                     extracted_data.append({"id": idx, "label": label, "final_url": href, "status": "WORKING (Social Media Link)"})
                     continue
 
                 try:
-                    res = requests.get(href, headers=headers, allow_redirects=True, timeout=8)
+                    res = requests.get(href, headers=headers, allow_redirects=True, timeout=12)
                     if res.status_code == 200:
                         status = "WORKING (200)"
                     elif res.status_code == 404:
@@ -108,14 +107,15 @@ if st.button("🚀 Run QA Audit", type="primary"):
         except Exception as e:
             st.error(f"Error fetching preview link: {e}")
 
-    # Step 2: Build Strict Prompt
+    # Step 2: Build Prompt with Mandatory Image URL Output Rule
     prompt = f"""
     You are a strict, zero-tolerance Email Campaign QA Auditor.
 
     # SPECIAL BUSINESS RULES:
     1. **DATE YEAR DEFAULT:** If a date in the ClickUp brief lacks an explicit year (e.g. "8/24" or "08/24"), ASSUME IT MEANS THE CURRENT YEAR ({CURRENT_YEAR}). Do NOT flag a year mismatch if the ESP scheduled year is {CURRENT_YEAR}.
     2. **CREATIVE VS BUILD MATCH:** Compare the ESP preview build visual against the Approved Creative (if attached). Flag any discrepancy in design, imagery, layout, or copy.
-    3. **IMAGE ALT ATTRIBUTE CHECK:** Review the extracted `<img>` alt tags below. Every image MUST have an `alt` attribute. Flag any image missing an `alt` attribute, having an empty `alt=""`, or having `alt` text that mismatches the actual image context (e.g., Facebook icon with `alt="Instagram"` or Eyeglasses with `alt="Sunglasses"`).
+    3. **STRICT IMAGE ALT CHECK & URL REQUIREMENT:** Review the extracted `<img>` alt tags below. For ANY image missing an `alt` attribute, having an empty `alt=""`, or having incorrect `alt` text, YOU MUST STRICTLY INCLUDE THE EXACT IMAGE URL IN THE AUDIT REPORT. 
+       - Required Format: `* Image #[ID] ([EXACT IMAGE URL]): [SPECIFIC ISSUE]`
     4. **IGNORE SOCIAL MEDIA STATUS 400/403/429:** Links marked as "WORKING (Social Media Link)" or "PROTECTED / FIREWALL" are valid and must NOT be flagged as broken.
 
     # MANDATORY CHECKPOINTS:
@@ -163,7 +163,7 @@ if st.button("🚀 Run QA Audit", type="primary"):
 
     ### Part 3: Build, Copy, Link & Image Alt Audit
     * **Creative Visual Alignment:** [State whether build visually matches approved creative mockup.]
-    * **Image <alt> Tag Audit:** [Flag missing/empty alt attributes or alt text mismatches, or state "All image alt tags verified."]
+    * **Image <alt> Tag Audit:** [MUST list each flagged image as `Image #[ID] ([EXACT IMAGE URL]): [ISSUE]`, or state "All image alt tags verified."]
     * **Broken & Dead Links:** [List true 404s/Timeouts or state "All live links active."]
     * **Misdirected Links:** [Flag mismatched destinations or state "All CTA destinations match context."]
     * **Unlinked Buttons (Missing Href):** [List buttons with missing links or state "None."]
@@ -171,7 +171,7 @@ if st.button("🚀 Run QA Audit", type="primary"):
     * **Typos & Copy Errors:** [List typos or state "None."]
 
     ### Part 4: Required Action Items
-    * [Numbered list of exact fixes required before sending]
+    * [Numbered list of exact fixes required before sending, including specific Image URLs for alt tag fixes]
     """
 
     # Process File Inputs (Creative + Schedule Document)
@@ -207,7 +207,7 @@ if st.button("🚀 Run QA Audit", type="primary"):
                     except Exception:
                         pass
 
-    # Step 3: Run Gemini AI Analysis (Inside auto-clearing spinner)
+    # Step 3: Run Gemini AI Analysis (Auto-Clearing Spinner)
     with st.spinner("🤖 Analyzing campaign assets with Gemini AI..."):
         try:
             response = model.generate_content(multimodal_inputs)
