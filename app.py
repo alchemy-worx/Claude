@@ -47,16 +47,35 @@ if st.button("🚀 Run QA Audit", type="primary"):
     }
 
     # Step 1: HTML Crawling & Alt-Tag Extraction (30s Timeout + Auto-Clearing Spinner)
-    with st.spinner("🔍 Crawling live links, extracting image <alt> tags, and auditing button destinations..."):
+    with st.spinner("🔍 Crawling live links, filtering tracking pixels, and auditing button destinations..."):
         try:
             resp = requests.get(listrak_url, headers=headers, timeout=30)
             soup = BeautifulSoup(resp.text, 'html.parser')
             
-            # Audit all <img> tags for missing or blank alt attributes
+            # Audit <img> tags for missing/blank alt attributes, IGNORED FOR TRACKING PIXELS
             images = soup.find_all('img')
             for idx, img in enumerate(images, 1):
                 src = img.get('src', 'N/A').strip()
                 alt = img.get('alt')
+                width = str(img.get('width', '')).strip()
+                height = str(img.get('height', '')).strip()
+                style = str(img.get('style', '')).lower().replace(' ', '')
+                src_lower = src.lower()
+
+                # Identify tracking pixels by dimensions or standard tracking URL patterns
+                is_tracking_pixel = (
+                    width in ['0', '1'] or height in ['0', '1'] or
+                    'width:1px' in style or 'height:1px' in style or
+                    'width:0px' in style or 'height:0px' in style or
+                    '1x1' in src_lower or 'pixel' in src_lower or 
+                    'tracker' in src_lower or 'beacon' in src_lower or
+                    '/q/' in src_lower
+                )
+
+                # Skip tracking pixels entirely from alt tag audit
+                if is_tracking_pixel:
+                    continue
+
                 if alt is None:
                     image_alt_audit.append(f"Image #{idx} ({src}): MISSING ALT ATTRIBUTE")
                 elif alt.strip() == "":
@@ -107,14 +126,14 @@ if st.button("🚀 Run QA Audit", type="primary"):
         except Exception as e:
             st.error(f"Error fetching preview link: {e}")
 
-    # Step 2: Build Prompt with Mandatory Image URL Output Rule
+    # Step 2: Build Prompt
     prompt = f"""
     You are a strict, zero-tolerance Email Campaign QA Auditor.
 
     # SPECIAL BUSINESS RULES:
     1. **DATE YEAR DEFAULT:** If a date in the ClickUp brief lacks an explicit year (e.g. "8/24" or "08/24"), ASSUME IT MEANS THE CURRENT YEAR ({CURRENT_YEAR}). Do NOT flag a year mismatch if the ESP scheduled year is {CURRENT_YEAR}.
     2. **CREATIVE VS BUILD MATCH:** Compare the ESP preview build visual against the Approved Creative (if attached). Flag any discrepancy in design, imagery, layout, or copy.
-    3. **STRICT IMAGE ALT CHECK & URL REQUIREMENT:** Review the extracted `<img>` alt tags below. For ANY image missing an `alt` attribute, having an empty `alt=""`, or having incorrect `alt` text, YOU MUST STRICTLY INCLUDE THE EXACT IMAGE URL IN THE AUDIT REPORT. 
+    3. **STRICT IMAGE ALT CHECK & URL REQUIREMENT:** Review the extracted `<img>` alt tags below (tracking pixels have already been filtered out). For ANY content image missing an `alt` attribute, having an empty `alt=""`, or having incorrect `alt` text, YOU MUST STRICTLY INCLUDE THE EXACT IMAGE URL IN THE AUDIT REPORT. 
        - Required Format: `* Image #[ID] ([EXACT IMAGE URL]): [SPECIFIC ISSUE]`
     4. **IGNORE SOCIAL MEDIA STATUS 400/403/429:** Links marked as "WORKING (Social Media Link)" or "PROTECTED / FIREWALL" are valid and must NOT be flagged as broken.
 
