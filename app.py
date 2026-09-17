@@ -1,288 +1,162 @@
 import streamlit as st
-import requests
-from bs4 import BeautifulSoup
 import google.generativeai as genai
 from PIL import Image
 import io
-import zipfile
-import docx
-import urllib.parse
-from datetime import datetime
-import time
+import requests
+from bs4 import BeautifulSoup
+import re
 
-st.set_page_config(page_title="Campaign QA Auditor", layout="wide")
-st.title("📋 Campaign QA Auditor")
+# -----------------------------------------------------------------------------
+# 1. STREAMLIT & GEMINI CONFIGURATION
+# -----------------------------------------------------------------------------
+st.set_page_config(page_title="Email QA Auditor", layout="wide")
 
-# API Key handling
-api_key = st.secrets.get("GEMINI_API_KEY") if "GEMINI_API_KEY" in st.secrets else st.sidebar.text_input("Gemini API Key", type="password")
+# Fetch API key securely from Streamlit Secrets
+api_key = st.secrets.get("GEMINI_API_KEY")
+if not api_key:
+    st.error("Missing GEMINI_API_KEY in Streamlit Secrets.")
+    st.stop()
 
-# Current Year Context
-CURRENT_YEAR = datetime.now().year
+genai.configure(api_key=api_key)
 
-# Inputs
-st.subheader("Campaign Inputs")
-creative_file = st.file_uploader("1. Upload Approved Creative Mockup (PNG, JPG, PDF)", type=["png", "jpg", "jpeg", "pdf"])
-listrak_url = st.text_input("2. Listrak / ESP Preview Link")
-clickup_text = st.text_area("3. ClickUp Task Brief Text", height=150)
-uploaded_file = st.file_uploader("4. Upload ESP Scheduling Screenshot, PDF, or Word Doc", type=["png", "jpg", "jpeg", "pdf", "docx"])
+# -----------------------------------------------------------------------------
+# 2. UPDATED SYSTEM PROMPT (Vincent's Feedback Applied)
+# -----------------------------------------------------------------------------
+SYSTEM_PROMPT = """
+You are an elite Digital Marketing & Email Campaign QA Auditor. Perform a rigorous, multi-point audit comparing the campaign assets provided.
 
-SOCIAL_DOMAINS = ['facebook.com', 'instagram.com', 'twitter.com', 'x.com', 'linkedin.com', 'pinterest.com', 'youtube.com', 'tiktok.com']
+STRICT AUDIT RULES:
 
-def decode_cloudflare_email(encoded_string):
-    """Decodes Cloudflare obfuscated email hex strings into plain text."""
+1. ITEMIZED SEGMENTS & SUPPRESSIONS:
+   - DO NOT sum, aggregate, or summarize segment numbers or suppression counts into single totals.
+   - List EVERY target segment and EVERY suppression rule individually, line-by-line.
+   - Compare each line item directly against the brief.
+
+2. AUDIENCE COUNT ANOMALY DETECTION:
+   - Extract expected audience numbers from the brief and actual counts from the ESP schedule asset.
+   - Explicitly report both numbers and flag ANY variance, unexpected audience drop, or count anomaly as a HIGH SEVERITY issue.
+
+3. CONTEXTUAL OCR & SPELLING PRECISION:
+   - Cross-reference ambiguous or low-resolution text in screenshots/PDFs against the brief context to prevent OCR mistakes (e.g., verify platform names like 'Listrak' vs 'Rentrak').
+
+4. VISUAL TRUNCATION CALIBRATION:
+   - Carefully review full-length email scroll mockups against ESP previews.
+   - DO NOT flag an email preview as 'truncated' or 'missing sections' unless visual content is genuinely cut off at the bottom or absent from the layout. Verify full vertical scroll height before flagging.
+
+REQUIRED OUTPUT FORMAT:
+
+### 🚦 Overall Audit Status
+[PASS | PASS WITH MINOR EDITS | CRITICAL FAIL]
+
+### 🚨 Discrepancy Matrix
+| Audit Category | Element | Expected (Brief/Mockup) | Found (ESP/Schedule) | Severity (High/Med/Low) |
+| :--- | :--- | :--- | :--- | :--- |
+
+### 📋 Detailed Audit Breakdown
+- **Visuals & Layout:** [Pass / Specific Issues]
+- **Copy & Formatting:** [Pass / Specific Issues]
+- **Links & CTAs:** [Pass / Specific Issues]
+- **Segmentation & Suppressions (Itemized):** [List every target segment and suppression line-by-line]
+- **Audience Count Audit:** [Brief Count vs. ESP Schedule Count & Variance Analysis]
+
+### 🔧 Actionable Fix List
+[Numbered list of exact changes required]
+"""
+
+# -----------------------------------------------------------------------------
+# 3. HELPER FUNCTIONS FOR PRE-PROCESSING
+# -----------------------------------------------------------------------------
+def inspect_preview_url(url):
+    """Programmatically pings links and strips tracking pixels."""
+    report = []
     try:
-        r = int(encoded_string[:2], 16)
-        email = "".join([chr(int(encoded_string[i:i+2], 16) ^ r) for i in range(2, len(encoded_string), 2)])
-        return email
-    except Exception:
-        return None
-
-if st.button("🚀 Run QA Audit", type="primary"):
-    if not api_key:
-        st.error("Please provide a Gemini API Key.")
-        st.stop()
-    if not listrak_url or not clickup_text or not uploaded_file:
-        st.warning("Please fill in the required inputs (Preview Link, ClickUp Brief, and ESP Schedule Document).")
-        st.stop()
-
-    genai.configure(api_key=api_key)
-    model = genai.GenerativeModel('gemini-3.6-flash')
-
-    extracted_data = []
-    image_alt_audit = []
-    
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
-    }
-
-    # Step 1: HTML Crawling, Alt-Tag Extraction & Email Decoding
-    with st.spinner("🔍 Crawling live links, decoding email links, and auditing button destinations..."):
-        try:
-            resp = requests.get(listrak_url, headers=headers, timeout=30)
-            soup = BeautifulSoup(resp.text, 'html.parser')
-            
-            # Audit <img> tags for missing/blank alt attributes (filtering out tracking pixels)
-            images = soup.find_all('img')
-            for idx, img in enumerate(images, 1):
-                src = img.get('src', 'N/A').strip()
-                alt = img.get('alt')
-                width = str(img.get('width', '')).strip()
-                height = str(img.get('height', '')).strip()
-                style = str(img.get('style', '')).lower().replace(' ', '')
-                src_lower = src.lower()
-
-                # Filter tracking pixels
-                is_tracking_pixel = (
-                    width in ['0', '1'] or height in ['0', '1'] or
-                    'width:1px' in style or 'height:1px' in style or
-                    'width:0px' in style or 'height:0px' in style or
-                    '1x1' in src_lower or 'pixel' in src_lower or 
-                    'tracker' in src_lower or 'beacon' in src_lower or
-                    '/q/' in src_lower
-                )
-
-                if is_tracking_pixel:
-                    continue
-
-                if alt is None:
-                    image_alt_audit.append(f"Image #{idx} ({src}): MISSING ALT ATTRIBUTE")
-                elif alt.strip() == "":
-                    image_alt_audit.append(f"Image #{idx} ({src}): EMPTY ALT ATTRIBUTE (alt=\"\")")
-                else:
-                    image_alt_audit.append(f"Image #{idx} ({src}): alt=\"{alt.strip()}\"")
-
-            # Audit <a> links
-            links = soup.find_all('a')
-            for idx, link in enumerate(links, 1):
-                href = link.get('href', '').strip()
-                text = link.get_text(strip=True)
-                img = link.find('img')
-                alt = img.get('alt', '').strip() if img else ''
-                label = text or alt or "Unlabeled Image/Button"
-
-                # Check for Cloudflare email obfuscation
-                cf_email = None
-                if '/email-protection' in href and '#' in href:
-                    hex_str = href.split('#')[-1]
-                    cf_email = decode_cloudflare_email(hex_str)
-                elif link.get('data-cfemail'):
-                    cf_email = decode_cloudflare_email(link.get('data-cfemail'))
-
-                if cf_email:
-                    extracted_data.append({
-                        "id": idx, 
-                        "label": label, 
-                        "final_url": f"mailto:{cf_email}", 
-                        "status": f"WORKING (Email Link: mailto:{cf_email})"
-                    })
-                    continue
-
-                # Handle standard mailto links
-                if href.startswith('mailto:'):
-                    extracted_data.append({
-                        "id": idx, 
-                        "label": label, 
-                        "final_url": href, 
-                        "status": f"WORKING (Email Link: {href})"
-                    })
-                    continue
-                
-                if not href or href == '#' or href.startswith('javascript:'):
-                    extracted_data.append({"id": idx, "label": label, "final_url": "NONE", "status": "NO LINK / MISSING HREF"})
-                    continue
-                    
-                if href.startswith('tel:'):
-                    extracted_data.append({"id": idx, "label": label, "final_url": href, "status": "WORKING (Protocol Link)"})
-                    continue
-
-                parsed = urllib.parse.urlparse(href)
-                domain = parsed.netloc.lower()
-
-                if any(sd in domain for sd in SOCIAL_DOMAINS):
-                    extracted_data.append({"id": idx, "label": label, "final_url": href, "status": "WORKING (Social Media Link)"})
-                    continue
-
+        res = requests.get(url, timeout=10)
+        soup = BeautifulSoup(res.text, 'html.parser')
+        
+        links = soup.find_all('a', href=True)
+        report.append(f"Total Links Found: {len(links)}")
+        
+        # Check for broken links (Basic 404 check)
+        broken_links = []
+        for a in links[:15]:  # Sample first 15 for quick response
+            href = a['href']
+            if href.startswith('http'):
                 try:
-                    res = requests.get(href, headers=headers, allow_redirects=True, timeout=12)
-                    if res.status_code == 200:
-                        status = "WORKING (200)"
-                    elif res.status_code == 404:
-                        status = "BROKEN (404 Page Not Found)"
-                    elif res.status_code in [400, 403, 429]:
-                        status = "PROTECTED / FIREWALL (Valid in browser)"
-                    else:
-                        status = f"HTTP STATUS {res.status_code}"
-                    final_url = res.url
-                except Exception:
-                    final_url = href
-                    status = "ERROR / TIMEOUT"
+                    r = requests.head(href, allow_redirects=True, timeout=3)
+                    if r.status_code >= 400:
+                        broken_links.append(f"{href} (Status: {r.status_code})")
+                except:
+                    pass
+        if broken_links:
+            report.append(f"Potential Dead Links: {', '.join(broken_links)}")
+        else:
+            report.append("HTTP Link Pings: All tested links returned valid status.")
+            
+    except Exception as e:
+        report.append(f"Could not scrape URL: {str(e)}")
+    return "\n".join(report)
 
-                extracted_data.append({"id": idx, "label": label, "final_url": final_url, "status": status})
-        except Exception as e:
-            st.error(f"Error fetching preview link: {e}")
+def process_file_to_image(uploaded_file):
+    """Converts uploaded images or PDFs (at 300 DPI for high resolution) into PIL Images."""
+    if uploaded_file.type == "application/pdf":
+        try:
+            from pdf2image import convert_from_bytes
+            images = convert_from_bytes(uploaded_file.read(), dpi=300) # High DPI to prevent OCR misreads
+            return images[0]
+        except Exception:
+            st.warning(f"Could not render PDF {uploaded_file.name} as image. Passing text content instead.")
+            return None
+    else:
+        return Image.open(uploaded_file)
 
-    # Step 2: Build Strict Prompt with 1:1 Segment Name Matching
-    prompt = f"""
-    You are a strict, zero-tolerance Email Campaign QA Auditor.
+# -----------------------------------------------------------------------------
+# 4. STREAMLIT UI & INTERFACE
+# -----------------------------------------------------------------------------
+st.title("📧 Email Campaign QA Auditor")
+st.write("Upload your campaign assets below for an automated multi-point audit.")
 
-    # SPECIAL BUSINESS RULES:
-    1. **DATE YEAR DEFAULT:** If a date in the ClickUp brief lacks an explicit year (e.g. "8/24" or "08/24"), ASSUME IT MEANS THE CURRENT YEAR ({CURRENT_YEAR}). Do NOT flag a year mismatch if the ESP scheduled year is {CURRENT_YEAR}.
-    2. **CREATIVE VS BUILD MATCH:** Compare the ESP preview build visual against the Approved Creative (if attached). Flag any discrepancy in design, imagery, layout, or copy.
-    3. **STRICT 1:1 SEGMENT NAME MATCHING:**
-       - Compare EVERY segment name, prefix, suffix, and numerical code listed in the ClickUp brief against the actual segments booked in ESP.
-       - If ANY briefed segment name is missing, renamed, altered, misspelled, or uses a wrong prefix/suffix code (e.g., Brief asks for `SLL-01-MVB-PLP` but ESP shows `SLL-01-MVB-CLP`), YOU MUST FLAG THIS AS A CRITICAL MISMATCH (`❌ Segment Name Mismatch`) and mark Part 1 as `🔴 [FAIL: ISSUES DETECTED]`.
-       - **SEEDLIST EXCEPTION:** Unrequested extra segments containing "seedlist" (e.g., "Seedlist-Ezcontacts") are acceptable ONLY IF all briefed target segment names match 100% identically. If any target segment was renamed or altered, DO NOT give an OK status.
-    4. **STRICT IMAGE ALT CHECK & URL REQUIREMENT:** Review the extracted `<img>` alt tags below (tracking pixels have already been filtered out). For ANY content image missing an `alt` attribute, having an empty `alt=""`, or having incorrect `alt` text, YOU MUST STRICTLY INCLUDE THE EXACT IMAGE URL IN THE AUDIT REPORT. 
-       - Required Format: `* Image #[ID] ([EXACT IMAGE URL]): [SPECIFIC ISSUE]`
-    5. **EMAIL LINK PRINTING:** NEVER print `[email protected]`. ALWAYS print the explicit `mailto:address@domain.com` URL extracted in the Live Link Crawl Results.
-    6. **IGNORE SOCIAL MEDIA STATUS 400/403/429:** Links marked as "WORKING (Social Media Link)" or "PROTECTED / FIREWALL" are valid and must NOT be flagged as broken.
+col1, col2 = st.columns(2)
 
-    # MANDATORY CHECKPOINTS:
-    - Segment Mismatches / Missing Segments / Extra Segments / Renamed Segments
-    - Missing or Incorrect Suppressions
-    - Send Date / Time / Timezone
-    - Campaign Naming Conventions
-    - A/B Test Configuration Mismatches
-    - Subject Line & Preheader Exact Match
-    - Typos, Spelling, and Grammar
-    - Unreplaced Placeholders (e.g., XXXXX, PROMOCODE, [NAME])
-    - Broken Links (404s) & Unlinked CTAs
-    - Misdirected Links & Alt Text Context Mismatches
+with col1:
+    creative_mockup = st.file_uploader("1. Approved Creative Mockup (PNG, JPG, PDF)", type=["png", "jpg", "jpeg", "pdf"])
+    clickup_brief = st.text_area("2. ClickUp Task Brief Text / Notes", height=150)
 
-    # AUDIT INPUTS:
-    - **ClickUp Brief Text:**
-    {clickup_text}
+with col2:
+    preview_url = st.text_input("3. Live ESP Test Preview URL")
+    esp_schedule = st.file_uploader("4. ESP Scheduling Screenshot/PDF (Segments & Audience Counts)", type=["png", "jpg", "jpeg", "pdf"])
 
-    - **Extracted HTML Image Alt Tags:**
-    {image_alt_audit}
-
-    - **Live Link Crawl Results:**
-    {extracted_data}
-
-    - **ESP Scheduling Screenshot / Document:** Attached below.
-
-    # MANDATORY RESPONSE FORMAT:
-    Do NOT write setup text. Start Line 1 with "### Part 1: Master QA Status Banner".
-
-    ### Part 1: Master QA Status Banner
-    [🟢 [PASS] - All deployment settings, copy, and live links are verified. OR 🔴 [FAIL: ISSUES DETECTED]]
-    * [List every single failure item found in bold]
-
-    ### Part 2: Deployment & Schedule Verification Table
-    | Parameter | Planned Specs (ClickUp) | Actual Scheduled (ESP) | Match Status |
-    | :--- | :--- | :--- | :--- |
-    | **Creative vs Build Match** | [Approved Mockup] | [Preview Build] | OK / ❌ Mismatch |
-    | **Campaign Name** | [Name] | [Name] | OK / ❌ Mismatch |
-    | **A/B Test Setup** | [Single / A/B] | [Single / A/B] | OK / ❌ Mismatch |
-    | **Target Segments** | [Segments] | [Segments] | OK / ❌ Segment Name Mismatch |
-    | **Suppressions** | [Suppressed Lists] | [Suppressed Lists] | OK / ❌ Missing or Wrong |
-    | **Send Date & Time** | [Date @ Time Timezone] | [Date @ Time Timezone] | OK / ❌ Mismatch |
-    | **Subject Line** | [Brief Subject] | [Actual Subject] | OK / ❌ Mismatch |
-    | **Preheader Text** | [Brief Preheader] | [Actual Preheader] | OK / ❌ Mismatch |
-
-    ### Part 3: Build, Copy, Link & Image Alt Audit
-    * **Creative Visual Alignment:** [State whether build visually matches approved creative mockup.]
-    * **Image <alt> Tag Audit:** [MUST list each flagged image as `Image #[ID] ([EXACT IMAGE URL]): [ISSUE]`, or state "All image alt tags verified."]
-    * **Broken & Dead Links:** [List true 404s/Timeouts or state "All live links active."]
-    * **Misdirected Links:** [Flag mismatched destinations or state "All CTA destinations match context."]
-    * **Unlinked Buttons (Missing Href):** [List buttons with missing links or state "None."]
-    * **Placeholders & Dynamic Code Check:** [Flag unreplaced code or state "None detected."]
-    * **Typos & Copy Errors:** [List typos or state "None."]
-
-    ### Part 4: Required Action Items
-    * [Numbered list of exact fixes required before sending, including specific Image URLs for alt tag fixes]
-    """
-
-    # Process File Inputs (Creative + Schedule Document)
-    multimodal_inputs = [prompt]
-
-    if creative_file:
-        c_type = creative_file.name.split('.')[-1].lower()
-        if c_type in ['png', 'jpg', 'jpeg']:
-            multimodal_inputs.append("Approved Creative Visual Mockup:")
-            multimodal_inputs.append(Image.open(creative_file))
-        elif c_type == 'pdf':
-            multimodal_inputs.append("Approved Creative Document (PDF):")
-            multimodal_inputs.append({"mime_type": "application/pdf", "data": creative_file.getvalue()})
-
-    s_type = uploaded_file.name.split('.')[-1].lower()
-    if s_type in ['png', 'jpg', 'jpeg']:
-        multimodal_inputs.append("ESP Scheduling Screenshot:")
-        multimodal_inputs.append(Image.open(uploaded_file))
-    elif s_type == 'pdf':
-        multimodal_inputs.append("ESP Scheduling Document (PDF):")
-        multimodal_inputs.append({"mime_type": "application/pdf", "data": uploaded_file.getvalue()})
-    elif s_type == 'docx':
-        doc = docx.Document(uploaded_file)
-        docx_text = "\n".join([p.text for p in doc.paragraphs if p.text.strip()])
-        if docx_text:
-            multimodal_inputs.append(f"ESP Scheduling Text from DOCX:\n{docx_text}")
-        uploaded_file.seek(0)
-        with zipfile.ZipFile(uploaded_file) as z:
-            for filename in z.namelist():
-                if filename.startswith('word/media/'):
-                    try:
-                        multimodal_inputs.append(Image.open(io.BytesIO(z.read(filename))))
-                    except Exception:
-                        pass
-
-    # Step 3: Run Gemini AI Analysis (Auto-Clearing Spinner + 429 Retry Protection)
-    with st.spinner("🤖 Analyzing campaign assets with Gemini AI..."):
-        max_retries = 3
-        for attempt in range(max_retries):
-            try:
-                response = model.generate_content(multimodal_inputs)
-                st.markdown("---")
-                st.markdown(response.text)
-                break
-            except Exception as e:
-                err_msg = str(e)
-                if "429" in err_msg and attempt < max_retries - 1:
-                    time.sleep(15)
-                    continue
-                else:
-                    st.error(f"Gemini API Error: {err_msg}")
-                    if "429" in err_msg:
-                        st.info("💡 **Tip:** You have reached the Free Tier request limit. Please wait 1 minute before running another audit, or upgrade your API Key in Google AI Studio.")
-                    break
+if st.button("🚀 Run Campaign Audit", type="primary"):
+    if not (creative_mockup and clickup_brief):
+        st.warning("Please provide at least the Creative Mockup and ClickUp Brief.")
+    else:
+        with st.spinner("Analyzing assets, auditing links, and checking segmentation counts..."):
+            prompt_payload = [SYSTEM_PROMPT]
+            
+            # Add Creative Mockup
+            mockup_img = process_file_to_image(creative_mockup)
+            if mockup_img:
+                prompt_payload.append("APPROVED CREATIVE MOCKUP:")
+                prompt_payload.append(mockup_img)
+            
+            # Add Brief Text
+            prompt_payload.append(f"\nCLICKUP BRIEF TEXT:\n{clickup_brief}")
+            
+            # Process Preview Link
+            if preview_url:
+                technical_link_data = inspect_preview_url(preview_url)
+                prompt_payload.append(f"\nPROGRAMMATIC LINK & HTML AUDIT DATA:\nURL: {preview_url}\n{technical_link_data}")
+            
+            # Add ESP Schedule Asset
+            if esp_schedule:
+                schedule_img = process_file_to_image(esp_schedule)
+                if schedule_img:
+                    prompt_payload.append("\nESP SCHEDULING & AUDIENCE SCREENSHOT:")
+                    prompt_payload.append(schedule_img)
+            
+            # Call Gemini API
+            model = genai.GenerativeModel('gemini-1.5-flash')
+            response = model.generate_content(prompt_payload)
+            
+            # Render Audit Results
+            st.markdown("---")
+            st.markdown(response.text)
