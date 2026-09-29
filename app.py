@@ -1,10 +1,8 @@
 import streamlit as st
 import google.generativeai as genai
 from PIL import Image
-import io
 import requests
 from bs4 import BeautifulSoup
-import re
 
 # -----------------------------------------------------------------------------
 # 1. STREAMLIT & GEMINI CONFIGURATION
@@ -20,7 +18,7 @@ if not api_key:
 genai.configure(api_key=api_key)
 
 # -----------------------------------------------------------------------------
-# 2. UPDATED SYSTEM PROMPT (Vincent's Feedback Applied)
+# 2. SYSTEM PROMPT (Itemized Segments, Counts, OCR & Truncation Rules)
 # -----------------------------------------------------------------------------
 SYSTEM_PROMPT = """
 You are an elite Digital Marketing & Email Campaign QA Auditor. Perform a rigorous, multi-point audit comparing the campaign assets provided.
@@ -64,10 +62,10 @@ REQUIRED OUTPUT FORMAT:
 """
 
 # -----------------------------------------------------------------------------
-# 3. HELPER FUNCTIONS FOR PRE-PROCESSING
+# 3. HELPER FUNCTIONS
 # -----------------------------------------------------------------------------
 def inspect_preview_url(url):
-    """Programmatically pings links and strips tracking pixels."""
+    """Programmatically pings links and inspects preview HTML."""
     report = []
     try:
         res = requests.get(url, timeout=10)
@@ -76,9 +74,8 @@ def inspect_preview_url(url):
         links = soup.find_all('a', href=True)
         report.append(f"Total Links Found: {len(links)}")
         
-        # Check for broken links (Basic 404 check)
         broken_links = []
-        for a in links[:15]:  # Sample first 15 for quick response
+        for a in links[:15]:  # Sample first 15 links
             href = a['href']
             if href.startswith('http'):
                 try:
@@ -96,24 +93,26 @@ def inspect_preview_url(url):
         report.append(f"Could not scrape URL: {str(e)}")
     return "\n".join(report)
 
-def process_file_to_image(uploaded_file):
-    """Converts uploaded images or PDFs (at 300 DPI for high resolution) into PIL Images."""
+def prepare_asset_payload(uploaded_file):
+    """Prepares images or PDFs for Gemini using native API handling."""
+    if uploaded_file is None:
+        return None
+    
     if uploaded_file.type == "application/pdf":
-        try:
-            from pdf2image import convert_from_bytes
-            images = convert_from_bytes(uploaded_file.read(), dpi=300) # High DPI to prevent OCR misreads
-            return images[0]
-        except Exception:
-            st.warning(f"Could not render PDF {uploaded_file.name} as image. Passing text content instead.")
-            return None
+        # Pass PDF bytes directly to Gemini's native PDF engine
+        return {
+            "mime_type": "application/pdf",
+            "data": uploaded_file.getvalue()
+        }
     else:
+        # Pass image file
         return Image.open(uploaded_file)
 
 # -----------------------------------------------------------------------------
-# 4. STREAMLIT UI & INTERFACE
+# 4. STREAMLIT UI & AUDIT ENGINE
 # -----------------------------------------------------------------------------
 st.title("📧 Email Campaign QA Auditor")
-st.write("Upload your campaign assets below for an automated multi-point audit.")
+st.write("Upload campaign assets below for an automated multi-point audit.")
 
 col1, col2 = st.columns(2)
 
@@ -129,34 +128,38 @@ if st.button("🚀 Run Campaign Audit", type="primary"):
     if not (creative_mockup and clickup_brief):
         st.warning("Please provide at least the Creative Mockup and ClickUp Brief.")
     else:
-        with st.spinner("Analyzing assets, auditing links, and checking segmentation counts..."):
-            prompt_payload = [SYSTEM_PROMPT]
-            
-            # Add Creative Mockup
-            mockup_img = process_file_to_image(creative_mockup)
-            if mockup_img:
-                prompt_payload.append("APPROVED CREATIVE MOCKUP:")
-                prompt_payload.append(mockup_img)
-            
-            # Add Brief Text
-            prompt_payload.append(f"\nCLICKUP BRIEF TEXT:\n{clickup_brief}")
-            
-            # Process Preview Link
-            if preview_url:
-                technical_link_data = inspect_preview_url(preview_url)
-                prompt_payload.append(f"\nPROGRAMMATIC LINK & HTML AUDIT DATA:\nURL: {preview_url}\n{technical_link_data}")
-            
-            # Add ESP Schedule Asset
-            if esp_schedule:
-                schedule_img = process_file_to_image(esp_schedule)
-                if schedule_img:
-                    prompt_payload.append("\nESP SCHEDULING & AUDIENCE SCREENSHOT:")
-                    prompt_payload.append(schedule_img)
-            
-            # Call Gemini API
-            model = genai.GenerativeModel('gemini-1.5-flash')
-            response = model.generate_content(prompt_payload)
-            
-            # Render Audit Results
-            st.markdown("---")
-            st.markdown(response.text)
+        with st.spinner("Processing assets and running campaign audit..."):
+            try:
+                prompt_payload = [SYSTEM_PROMPT]
+                
+                # 1. Add Creative Mockup
+                mockup_payload = prepare_asset_payload(creative_mockup)
+                if mockup_payload:
+                    prompt_payload.append("\nAPPROVED CREATIVE MOCKUP:")
+                    prompt_payload.append(mockup_payload)
+                
+                # 2. Add ClickUp Brief Text
+                prompt_payload.append(f"\nCLICKUP BRIEF TEXT:\n{clickup_brief}")
+                
+                # 3. Add Live Preview URL & Scraped Data
+                if preview_url:
+                    technical_link_data = inspect_preview_url(preview_url)
+                    prompt_payload.append(f"\nPROGRAMMATIC LINK & HTML AUDIT DATA:\nURL: {preview_url}\n{technical_link_data}")
+                
+                # 4. Add ESP Scheduling Asset
+                if esp_schedule:
+                    schedule_payload = prepare_asset_payload(esp_schedule)
+                    if schedule_payload:
+                        prompt_payload.append("\nESP SCHEDULING & AUDIENCE ASSET:")
+                        prompt_payload.append(schedule_payload)
+                
+                # 5. Execute Gemini API Call
+                model = genai.GenerativeModel('gemini-1.5-flash')
+                response = model.generate_content(prompt_payload)
+                
+                # Render Audit Results
+                st.markdown("---")
+                st.markdown(response.text)
+
+            except Exception as e:
+                st.error(f"An error occurred during the audit execution: {str(e)}")
