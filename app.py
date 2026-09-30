@@ -18,20 +18,17 @@ if not api_key:
 genai.configure(api_key=api_key)
 
 # -----------------------------------------------------------------------------
-# 2. BULLETPROOF MODEL EXECUTION ENGINE (Auto-Failover for 404s)
+# 2. MODEL EXECUTION ENGINE (Configured for Gemini 3.8 Flash)
 # -----------------------------------------------------------------------------
 def run_gemini_audit(prompt_payload):
     """
-    Attempts execution across standard active Flash model identifiers.
-    If Google throws a 404 on a deprecated model string, it instantly fails over
-    to the next active model without breaking the user experience.
+    Executes audit using active 3.x Flash series models.
+    Primary: gemini-3.8-flash (Google's recommended active model)
     """
     candidate_models = [
-        'gemini-1.5-flash-latest',
-        'gemini-1.5-flash',
-        'gemini-2.0-flash',
-        'gemini-flash-latest',
-        'gemini-1.5-pro-latest'
+        'gemini-3.8-flash',
+        'gemini-3.5-flash-lite',
+        'gemini-3.5-flash'
     ]
     
     last_exception = None
@@ -41,11 +38,9 @@ def run_gemini_audit(prompt_payload):
             response = model.generate_content(prompt_payload)
             return response
         except Exception as e:
-            # Catch 404s or model deprecations and try the next valid candidate
             last_exception = e
             continue
             
-    # Raise exception if all candidate model strings fail
     raise last_exception
 
 # -----------------------------------------------------------------------------
@@ -130,13 +125,11 @@ def prepare_asset_payload(uploaded_file):
         return None
     
     if uploaded_file.type == "application/pdf":
-        # Pass PDF bytes directly to Gemini's native engine
         return {
             "mime_type": "application/pdf",
             "data": uploaded_file.getvalue()
         }
     else:
-        # Pass image file directly
         return Image.open(uploaded_file)
 
 # -----------------------------------------------------------------------------
@@ -184,7 +177,7 @@ if st.button("🚀 Run Campaign Audit", type="primary"):
                         prompt_payload.append("\nESP SCHEDULING & AUDIENCE ASSET:")
                         prompt_payload.append(schedule_payload)
                 
-                # 5. Execute Audit with Dynamic Failover
+                # 5. Execute Audit with Gemini 3.8 Flash
                 response = run_gemini_audit(prompt_payload)
                 
                 # Render Audit Results
