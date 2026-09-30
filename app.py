@@ -18,31 +18,35 @@ if not api_key:
 genai.configure(api_key=api_key)
 
 # -----------------------------------------------------------------------------
-# 2. DYNAMIC MODEL RETRIEVAL (Guarantees active Flash model & prevents 404s)
+# 2. BULLETPROOF MODEL EXECUTION ENGINE (Auto-Failover for 404s)
 # -----------------------------------------------------------------------------
-def get_active_gemini_model():
-    """Dynamically pulls active Flash models straight from Google to prevent 404 errors while keeping costs ultra-low."""
-    try:
-        # Fetch models supported by your API key directly from Google
-        available_models = [
-            m.name for m in genai.list_models() 
-            if 'generateContent' in m.supported_generation_methods
-        ]
-        
-        # Priority 1: Pick the active Flash model (ultra-low cost + high speed)
-        for name in available_models:
-            if 'flash' in name:
-                return genai.GenerativeModel(name)
-        
-        # Priority 2: Pick any valid content model returned by the API
-        if available_models:
-            return genai.GenerativeModel(available_models[0])
-            
-    except Exception:
-        pass
+def run_gemini_audit(prompt_payload):
+    """
+    Attempts execution across standard active Flash model identifiers.
+    If Google throws a 404 on a deprecated model string, it instantly fails over
+    to the next active model without breaking the user experience.
+    """
+    candidate_models = [
+        'gemini-1.5-flash-latest',
+        'gemini-1.5-flash',
+        'gemini-2.0-flash',
+        'gemini-flash-latest',
+        'gemini-1.5-pro-latest'
+    ]
     
-    # Final fallback string if network model query fails
-    return genai.GenerativeModel('gemini-1.5-flash-latest')
+    last_exception = None
+    for model_name in candidate_models:
+        try:
+            model = genai.GenerativeModel(model_name)
+            response = model.generate_content(prompt_payload)
+            return response
+        except Exception as e:
+            # Catch 404s or model deprecations and try the next valid candidate
+            last_exception = e
+            continue
+            
+    # Raise exception if all candidate model strings fail
+    raise last_exception
 
 # -----------------------------------------------------------------------------
 # 3. SYSTEM PROMPT (Auditor Rules & Formatting)
@@ -121,7 +125,7 @@ def inspect_preview_url(url):
     return "\n".join(report)
 
 def prepare_asset_payload(uploaded_file):
-    """Prepares images or PDFs for Gemini using native API handling (no server dependencies required)."""
+    """Prepares images or PDFs for Gemini using native API handling."""
     if uploaded_file is None:
         return None
     
@@ -145,7 +149,6 @@ col1, col2 = st.columns(2)
 
 with col1:
     creative_mockup = st.file_uploader("1. Approved Creative Mockup (PNG, JPG, PDF)", type=["png", "jpg", "jpeg", "pdf"])
-    # Expanded height to 450px for easier pasting/reading of long brief notes
     clickup_brief = st.text_area("2. ClickUp Task Brief Text / Notes", height=450)
 
 with col2:
@@ -181,9 +184,8 @@ if st.button("🚀 Run Campaign Audit", type="primary"):
                         prompt_payload.append("\nESP SCHEDULING & AUDIENCE ASSET:")
                         prompt_payload.append(schedule_payload)
                 
-                # 5. Fetch Active Flash Model Dynamically & Execute API Call
-                model = get_active_gemini_model()
-                response = model.generate_content(prompt_payload)
+                # 5. Execute Audit with Dynamic Failover
+                response = run_gemini_audit(prompt_payload)
                 
                 # Render Audit Results
                 st.markdown("---")
