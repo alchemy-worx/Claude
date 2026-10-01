@@ -18,13 +18,10 @@ if not api_key:
 genai.configure(api_key=api_key)
 
 # -----------------------------------------------------------------------------
-# 2. MODEL EXECUTION ENGINE (Configured for Gemini 3.8 Flash)
+# 2. MODEL EXECUTION ENGINE (Gemini 3.8 Flash Standard)
 # -----------------------------------------------------------------------------
 def run_gemini_audit(prompt_payload):
-    """
-    Executes audit using active 3.x Flash series models.
-    Primary: gemini-3.8-flash (Google's recommended active model)
-    """
+    """Executes audit using active 3.x Flash series models with failover."""
     candidate_models = [
         'gemini-3.8-flash',
         'gemini-3.5-flash-lite',
@@ -44,28 +41,36 @@ def run_gemini_audit(prompt_payload):
     raise last_exception
 
 # -----------------------------------------------------------------------------
-# 3. SYSTEM PROMPT (Auditor Rules & Formatting)
+# 3. SYSTEM PROMPT (Strict Source of Truth & Auditor Rules)
 # -----------------------------------------------------------------------------
 SYSTEM_PROMPT = """
-You are an elite Digital Marketing & Email Campaign QA Auditor. Perform a rigorous, multi-point audit comparing the campaign assets provided.
+You are an elite Digital Marketing & Email Campaign QA Auditor. Perform a rigorous, multi-point audit comparing the live campaign assets against the provided Source of Truth brief.
 
 STRICT AUDIT RULES:
 
-1. ITEMIZED SEGMENTS & SUPPRESSIONS:
+1. SOURCE OF TRUTH ENFORCEMENT:
+   - The user has provided explicit brief inputs (Task Title, Send Date/Time, Subject Lines, Pre-headers, Target Segments).
+   - Compare ALL ESP assets, URLs, and previews directly against this exact source of truth.
+   - DO NOT automatically 'PASS' any check if the ESP schedule or creative asset lacks matching data or contradicts the source-of-truth brief. Flag discrepancies immediately as HIGH SEVERITY.
+
+2. ITEMIZED SEGMENTS & SUPPRESSIONS:
    - DO NOT sum, aggregate, or summarize segment numbers or suppression counts into single totals.
    - List EVERY target segment and EVERY suppression rule individually, line-by-line.
-   - Compare each line item directly against the brief.
+   - Compare each line item directly against the provided brief segments.
 
-2. AUDIENCE COUNT ANOMALY DETECTION:
-   - Extract expected audience numbers from the brief and actual counts from the ESP schedule asset.
+3. AUDIENCE COUNT ANOMALY DETECTION:
+   - Extract expected audience numbers from the brief/notes and actual counts from the ESP schedule asset.
    - Explicitly report both numbers and flag ANY variance, unexpected audience drop, or count anomaly as a HIGH SEVERITY issue.
 
-3. CONTEXTUAL OCR & SPELLING PRECISION:
+4. SUBJECT LINE & PRE-HEADER AUDIT:
+   - Cross-reference the brief's Subject Line(s) and Pre-header(s) word-for-word against the live ESP preview metadata/headers.
+
+5. CONTEXTUAL OCR & SPELLING PRECISION:
    - Cross-reference ambiguous or low-resolution text in screenshots/PDFs against the brief context to prevent OCR mistakes (e.g., verify platform names like 'Listrak' vs 'Rentrak').
 
-4. VISUAL TRUNCATION CALIBRATION:
+6. VISUAL TRUNCATION CALIBRATION:
    - Carefully review full-length email scroll mockups against ESP previews.
-   - DO NOT flag an email preview as 'truncated' or 'missing sections' unless visual content is genuinely cut off at the bottom or absent from the layout. Verify full vertical scroll height before flagging.
+   - DO NOT flag an email preview as 'truncated' or 'missing sections' unless visual content is genuinely cut off at the bottom or absent from the layout.
 
 REQUIRED OUTPUT FORMAT:
 
@@ -73,10 +78,12 @@ REQUIRED OUTPUT FORMAT:
 [PASS | PASS WITH MINOR EDITS | CRITICAL FAIL]
 
 ### 🚨 Discrepancy Matrix
-| Audit Category | Element | Expected (Brief/Mockup) | Found (ESP/Schedule) | Severity (High/Med/Low) |
+| Audit Category | Element | Expected (Source of Truth) | Found (ESP/Schedule) | Severity (High/Med/Low) |
 | :--- | :--- | :--- | :--- | :--- |
 
 ### 📋 Detailed Audit Breakdown
+- **Send Date & Schedule Audit:** [Pass / Specific Issues]
+- **Subject Line & Pre-header Audit:** [Pass / Specific Issues]
 - **Visuals & Layout:** [Pass / Specific Issues]
 - **Copy & Formatting:** [Pass / Specific Issues]
 - **Links & CTAs:** [Pass / Specific Issues]
@@ -136,51 +143,77 @@ def prepare_asset_payload(uploaded_file):
 # 5. STREAMLIT UI & AUDIT ENGINE
 # -----------------------------------------------------------------------------
 st.title("📧 Email Campaign QA Auditor")
-st.write("Upload campaign assets below for an automated multi-point audit.")
+st.write("Upload campaign assets and fill in the Source of Truth brief below for an automated multi-point audit.")
 
 col1, col2 = st.columns(2)
 
 with col1:
-    creative_mockup = st.file_uploader("1. Approved Creative Mockup (PNG, JPG, PDF)", type=["png", "jpg", "jpeg", "pdf"])
-    clickup_brief = st.text_area("2. ClickUp Task Brief Text / Notes", height=450)
+    st.subheader("1. Campaign Brief (Source of Truth)")
+    creative_mockup = st.file_uploader("Approved Creative Mockup (PNG, JPG, PDF)", type=["png", "jpg", "jpeg", "pdf"])
+    
+    task_title = st.text_input("ClickUp Task Title *")
+    send_datetime = st.text_input("Send Date / Time *")
+    subject_lines = st.text_area("Subject Line(s) *", height=80)
+    preheaders = st.text_area("Pre-header(s) *", height=80)
+    segments = st.text_area("Segments & Suppressions *", height=120)
+    other_notes = st.text_area("Other Notes (Optional)", height=80)
 
 with col2:
-    preview_url = st.text_input("3. Live ESP Test Preview URL")
-    esp_schedule = st.file_uploader("4. ESP Scheduling Screenshot/PDF (Segments & Audience Counts)", type=["png", "jpg", "jpeg", "pdf"])
+    st.subheader("2. ESP Deployment Assets")
+    preview_url = st.text_input("Live ESP Test Preview URL")
+    esp_schedule = st.file_uploader("ESP Scheduling Screenshot/PDF (Segments & Audience Counts)", type=["png", "jpg", "jpeg", "pdf"])
 
 if st.button("🚀 Run Campaign Audit", type="primary"):
-    if not (creative_mockup and clickup_brief):
-        st.warning("Please provide at least the Creative Mockup and ClickUp Brief.")
+    # Validate required fields
+    missing_fields = []
+    if not creative_mockup: missing_fields.append("Approved Creative Mockup")
+    if not task_title.strip(): missing_fields.append("ClickUp Task Title")
+    if not send_datetime.strip(): missing_fields.append("Send Date / Time")
+    if not subject_lines.strip(): missing_fields.append("Subject Line(s)")
+    if not preheaders.strip(): missing_fields.append("Pre-header(s)")
+    if not segments.strip(): missing_fields.append("Segments & Suppressions")
+
+    if missing_fields:
+        st.warning(f"Please fill in all required source-of-truth fields: {', '.join(missing_fields)}")
     else:
         with st.spinner("Processing assets and running campaign audit..."):
             try:
                 prompt_payload = [SYSTEM_PROMPT]
                 
+                # Formatted Source of Truth payload
+                brief_payload = f"""
+SOURCE OF TRUTH BRIEF DATA:
+- ClickUp Task Title: {task_title}
+- Target Send Date/Time: {send_datetime}
+- Approved Subject Line(s): {subject_lines}
+- Approved Pre-header(s): {preheaders}
+- Approved Segments & Suppressions: {segments}
+- Additional Notes: {other_notes if other_notes.strip() else 'None provided'}
+"""
+                prompt_payload.append(brief_payload)
+
                 # 1. Add Creative Mockup
                 mockup_payload = prepare_asset_payload(creative_mockup)
                 if mockup_payload:
-                    prompt_payload.append("\nAPPROVED CREATIVE MOCKUP:")
+                    prompt_payload.append("\nAPPROVED CREATIVE MOCKUP ASSET:")
                     prompt_payload.append(mockup_payload)
                 
-                # 2. Add ClickUp Brief Text
-                prompt_payload.append(f"\nCLICKUP BRIEF TEXT:\n{clickup_brief}")
-                
-                # 3. Add Live Preview URL & Scraped Data
+                # 2. Add Live Preview URL & Scraped Data
                 if preview_url:
                     technical_link_data = inspect_preview_url(preview_url)
                     prompt_payload.append(f"\nPROGRAMMATIC LINK & HTML AUDIT DATA:\nURL: {preview_url}\n{technical_link_data}")
                 
-                # 4. Add ESP Scheduling Asset
+                # 3. Add ESP Scheduling Asset
                 if esp_schedule:
                     schedule_payload = prepare_asset_payload(esp_schedule)
                     if schedule_payload:
                         prompt_payload.append("\nESP SCHEDULING & AUDIENCE ASSET:")
                         prompt_payload.append(schedule_payload)
                 
-                # 5. Execute Audit with Gemini 3.8 Flash
+                # 4. Execute Audit
                 response = run_gemini_audit(prompt_payload)
                 
-                # Render Audit Results
+                # Render Results
                 st.markdown("---")
                 st.markdown(response.text)
 
