@@ -41,8 +41,40 @@ def run_gemini_audit(prompt_payload):
     raise last_exception
 
 # -----------------------------------------------------------------------------
-# 3. SYSTEM PROMPT (Strict Source of Truth & Auditor Rules)
+# 3. KNOWLEDGE BASE & SYSTEM PROMPT
 # -----------------------------------------------------------------------------
+ESP_KNOWLEDGE_BASE = """
+=== ESP SEGMENT & KEYWORD KNOWLEDGE BASE ===
+(Use this reference to map unstructured, conversational segment requests from the brief into technical ESP logic before auditing the deployment screenshots).
+
+1. KLAVIYO DEFINITIONS
+- Activity Metrics: Opened Email, Clicked Email, Bounced Email, Dropped Email, Marked as Spam, Active on Site, Added to Cart, Placed Order, Fulfilled Order.
+- Operators: at least once, zero times, equals, is at least, in the last X days, over all time.
+- Standard & Custom Properties: $consent, City, Country. Custom include: Loyalty tier, VIP status, Location proximity.
+- Logic Operators: AND (strict inclusion), OR (broad inclusion).
+
+2. ATTENTIVE DEFINITIONS
+- SMS/Email Activity: Subscribed to text/email, Received text/email, Clicked shortlink/email link, Made a purchase.
+- Timeframes: At least once, Before Date, In the last Time Window, Days ago, Over all Time.
+- Custom Attributes: Loyalty member (True/False), Loyalty tier (Bronze/Silver/Gold/Platinum), VIP tier (VIP/Elite/Ambassador), Customer status (Prospect/New/Active/Repeat/Lapsed), Engagement tier (Highly engaged/Engaged/At risk/Unengaged).
+
+3. LISTRAK / NEXGEN DEFINITIONS
+- Contact Behavior: Contact Has Purchased (Buyer), Contact Has Not Purchased (Non-Buyer), Number of Orders, First/Last Order Date, Average Order Total.
+- System Fields: Last Open/Click/Send Date, Subscribe Date, List Subscription Status (Subscribed to / Not Subscribed to).
+- Predictive: Product Affinity, Lifecycle Stage, Likelihood to Click/Open/Purchase, Predicted Future Spend.
+
+4. OMNISEND DEFINITIONS
+- Engagement: Clicked on message, Opened message, Opted in, Opted out, Placed order, Started checkout, Added product to cart.
+- Operators: at least / exactly X times, in the last X days, before/after exact date.
+- Computed Traits / Metrics: Average Order Value, Total Spent, Days Since Last Purchase, Purchase Recency, Purchase Frequency.
+- Tags & Status: Subscription status (Subscribed, Non-subscribed, Unsubscribed), Customer lifecycle stage.
+
+5. EPSILON & ACOUSTIC DEFINITIONS
+- Digital Engagement Segments: Email Engaged, Email Inactive, Likely To Thrive, Most Valuable Subscribers, Nearly Inactive, Never Activated.
+- Profile Attributes & Events: Age_Range, BirthMonth, Preferred Channel, Abandoned Cart, Bounced, Clicked, Opened, Purchased.
+=============================================
+"""
+
 SYSTEM_PROMPT = """
 You are an elite Digital Marketing & Email Campaign QA Auditor. Perform a rigorous, multi-point audit comparing the live campaign assets against the provided Source of Truth brief.
 
@@ -53,22 +85,26 @@ STRICT AUDIT RULES:
    - Compare ALL ESP assets, URLs, and previews directly against this exact source of truth.
    - DO NOT automatically 'PASS' any check if the ESP schedule or creative asset lacks matching data or contradicts the source-of-truth brief. Flag discrepancies immediately as HIGH SEVERITY.
 
-2. ITEMIZED SEGMENTS & SUPPRESSIONS:
+2. CONVERSATIONAL SEGMENT TRANSLATION (IMPORTANT):
+   - The Source of Truth often contains unstructured, conversational segment requests (e.g., "silver and gold tier", "waitlist members", "Engaged-30D", "purchasers").
+   - Refer strictly to the provided ESP KNOWLEDGE BASE to mentally translate these conversational phrases into logical ESP segment conditions (e.g., "Custom Attribute - Loyalty Tier = Silver OR Gold", "Opened Email in the last 30 days").
+   - Evaluate the ESP Schedule Asset to ensure it accurately reflects this translated technical logic, not just exact word-for-word string matches.
+
+3. ITEMIZED SEGMENTS & SUPPRESSIONS:
    - DO NOT sum, aggregate, or summarize segment numbers or suppression counts into single totals.
    - List EVERY target segment and EVERY suppression rule individually, line-by-line.
-   - Compare each line item directly against the provided brief segments.
 
-3. AUDIENCE COUNT ANOMALY DETECTION:
+4. AUDIENCE COUNT ANOMALY DETECTION:
    - Extract expected audience numbers from the brief/notes and actual counts from the ESP schedule asset.
    - Explicitly report both numbers and flag ANY variance, unexpected audience drop, or count anomaly as a HIGH SEVERITY issue.
 
-4. SUBJECT LINE & PRE-HEADER AUDIT:
+5. SUBJECT LINE & PRE-HEADER AUDIT:
    - Cross-reference the brief's Subject Line(s) and Pre-header(s) word-for-word against the live ESP preview metadata/headers.
 
-5. CONTEXTUAL OCR & SPELLING PRECISION:
+6. CONTEXTUAL OCR & SPELLING PRECISION:
    - Cross-reference ambiguous or low-resolution text in screenshots/PDFs against the brief context to prevent OCR mistakes (e.g., verify platform names like 'Listrak' vs 'Rentrak').
 
-6. VISUAL TRUNCATION CALIBRATION:
+7. VISUAL TRUNCATION CALIBRATION:
    - Carefully review full-length email scroll mockups against ESP previews.
    - DO NOT flag an email preview as 'truncated' or 'missing sections' unless visual content is genuinely cut off at the bottom or absent from the layout.
 
@@ -178,7 +214,8 @@ if st.button("🚀 Run Campaign Audit", type="primary"):
     else:
         with st.spinner("Processing assets and running campaign audit..."):
             try:
-                prompt_payload = [SYSTEM_PROMPT]
+                # Append both the Knowledge Base and the System Prompt
+                prompt_payload = [ESP_KNOWLEDGE_BASE, SYSTEM_PROMPT]
                 
                 # Formatted Source of Truth payload
                 brief_payload = f"""
