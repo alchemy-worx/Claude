@@ -9,7 +9,6 @@ from bs4 import BeautifulSoup
 # -----------------------------------------------------------------------------
 st.set_page_config(page_title="Email QA Auditor", layout="wide")
 
-# Fetch API key securely from Streamlit Secrets
 api_key = st.secrets.get("GEMINI_API_KEY")
 if not api_key:
     st.error("Missing GEMINI_API_KEY in Streamlit Secrets.")
@@ -18,10 +17,9 @@ if not api_key:
 genai.configure(api_key=api_key)
 
 # -----------------------------------------------------------------------------
-# 2. MODEL EXECUTION ENGINE (Gemini 3.8 Flash Standard)
+# 2. MODEL EXECUTION ENGINE 
 # -----------------------------------------------------------------------------
 def run_gemini_audit(prompt_payload):
-    """Executes audit using active 3.x Flash series models with failover."""
     candidate_models = [
         'gemini-3.8-flash',
         'gemini-3.5-flash-lite',
@@ -41,72 +39,52 @@ def run_gemini_audit(prompt_payload):
     raise last_exception
 
 # -----------------------------------------------------------------------------
-# 3. KNOWLEDGE BASE & SYSTEM PROMPT
+# 3. KNOWLEDGE BASE & GUARDRAIL PROMPT
 # -----------------------------------------------------------------------------
 ESP_KNOWLEDGE_BASE = """
 === ESP SEGMENT & KEYWORD KNOWLEDGE BASE ===
-(Use this reference to map unstructured, conversational segment requests from the brief into technical ESP logic before auditing the deployment screenshots).
-
 1. KLAVIYO DEFINITIONS
-- Activity Metrics: Opened Email, Clicked Email, Bounced Email, Dropped Email, Marked as Spam, Active on Site, Added to Cart, Placed Order, Fulfilled Order.
-- Operators: at least once, zero times, equals, is at least, in the last X days, over all time.
-- Standard & Custom Properties: $consent, City, Country. Custom include: Loyalty tier, VIP status, Location proximity.
-- Logic Operators: AND (strict inclusion), OR (broad inclusion).
+- Activity Metrics: Opened Email, Clicked Email, Active on Site, Placed Order.
+- Operators: at least once, in the last X days.
+- Custom: Loyalty tier, VIP status.
 
 2. ATTENTIVE DEFINITIONS
-- SMS/Email Activity: Subscribed to text/email, Received text/email, Clicked shortlink/email link, Made a purchase.
-- Timeframes: At least once, Before Date, In the last Time Window, Days ago, Over all Time.
-- Custom Attributes: Loyalty member (True/False), Loyalty tier (Bronze/Silver/Gold/Platinum), VIP tier (VIP/Elite/Ambassador), Customer status (Prospect/New/Active/Repeat/Lapsed), Engagement tier (Highly engaged/Engaged/At risk/Unengaged).
+- SMS/Email Activity: Subscribed to text/email, Clicked link.
+- Custom Attributes: Loyalty tier, VIP tier, Customer status.
 
 3. LISTRAK / NEXGEN DEFINITIONS
-- Contact Behavior: Contact Has Purchased (Buyer), Contact Has Not Purchased (Non-Buyer), Number of Orders, First/Last Order Date, Average Order Total.
-- System Fields: Last Open/Click/Send Date, Subscribe Date, List Subscription Status (Subscribed to / Not Subscribed to).
-- Predictive: Product Affinity, Lifecycle Stage, Likelihood to Click/Open/Purchase, Predicted Future Spend.
+- Contact Behavior: Contact Has Purchased (Buyer), Number of Orders.
+- System Fields: Last Open/Click/Send Date, Subscribe Date.
 
 4. OMNISEND DEFINITIONS
-- Engagement: Clicked on message, Opened message, Opted in, Opted out, Placed order, Started checkout, Added product to cart.
-- Operators: at least / exactly X times, in the last X days, before/after exact date.
-- Computed Traits / Metrics: Average Order Value, Total Spent, Days Since Last Purchase, Purchase Recency, Purchase Frequency.
-- Tags & Status: Subscription status (Subscribed, Non-subscribed, Unsubscribed), Customer lifecycle stage.
+- Engagement: Clicked on message, Opened message, Opted in.
+- Computed Traits: Average Order Value, Total Spent.
 
 5. EPSILON & ACOUSTIC DEFINITIONS
-- Digital Engagement Segments: Email Engaged, Email Inactive, Likely To Thrive, Most Valuable Subscribers, Nearly Inactive, Never Activated.
-- Profile Attributes & Events: Age_Range, BirthMonth, Preferred Channel, Abandoned Cart, Bounced, Clicked, Opened, Purchased.
+- Segments: Email Engaged, Email Inactive, Abandoned Cart.
 =============================================
 """
 
 SYSTEM_PROMPT = """
 You are an elite Digital Marketing & Email Campaign QA Auditor. Perform a rigorous, multi-point audit comparing the live campaign assets against the provided Source of Truth brief.
 
-STRICT AUDIT RULES:
+STRICT AUDIT RULES & GUARDRAILS:
 
-1. SOURCE OF TRUTH ENFORCEMENT:
-   - The user has provided explicit brief inputs (Task Title, Send Date/Time, Subject Lines, Pre-headers, Target Segments).
-   - Compare ALL ESP assets, URLs, and previews directly against this exact source of truth.
-   - DO NOT automatically 'PASS' any check if the ESP schedule or creative asset lacks matching data or contradicts the source-of-truth brief. Flag discrepancies immediately as HIGH SEVERITY.
+1. ZERO LINK HALLUCINATION:
+   - If no live preview URL or programmatic link data is provided, explicitly state "N/A - No Preview URL provided" under Links & CTAs.
+   - NEVER invent, guess, or hallucinate HTTP 404 errors or scanned links.
 
-2. CONVERSATIONAL SEGMENT TRANSLATION (IMPORTANT):
-   - The Source of Truth often contains unstructured, conversational segment requests (e.g., "silver and gold tier", "waitlist members", "Engaged-30D", "purchasers").
-   - Refer strictly to the provided ESP KNOWLEDGE BASE to mentally translate these conversational phrases into logical ESP segment conditions (e.g., "Custom Attribute - Loyalty Tier = Silver OR Gold", "Opened Email in the last 30 days").
-   - Evaluate the ESP Schedule Asset to ensure it accurately reflects this translated technical logic, not just exact word-for-word string matches.
+2. GROSS VS. NET AUDIENCE COUNTS (DO NOT FALSE FLAG):
+   - The segment count provided in the brief is usually the GROSS count. The audience count in the ESP schedule is the NET count (Gross minus Suppressions).
+   - Therefore, the ESP count will almost ALWAYS be lower than the brief count. This is NORMAL.
+   - Do NOT flag a lower ESP count as a failure. ONLY flag an anomaly if the ESP count is mysteriously HIGHER than the gross segment.
 
-3. ITEMIZED SEGMENTS & SUPPRESSIONS:
-   - DO NOT sum, aggregate, or summarize segment numbers or suppression counts into single totals.
-   - List EVERY target segment and EVERY suppression rule individually, line-by-line.
+3. FUZZY OCR MATCHING (SUPPRESSIONS):
+   - Screenshots of ESP suppression lists are often blurry. Use fuzzy matching to align the exclusions seen in the image with the suppressions requested in the brief (e.g., if you read 'Rentak', intelligently map it to the requested 'RevRoll').
+   - DO NOT combine multiple suppression lists into a single name. Read them individually.
 
-4. AUDIENCE COUNT ANOMALY DETECTION:
-   - Extract expected audience numbers from the brief/notes and actual counts from the ESP schedule asset.
-   - Explicitly report both numbers and flag ANY variance, unexpected audience drop, or count anomaly as a HIGH SEVERITY issue.
-
-5. SUBJECT LINE & PRE-HEADER AUDIT:
-   - Cross-reference the brief's Subject Line(s) and Pre-header(s) word-for-word against the live ESP preview metadata/headers.
-
-6. CONTEXTUAL OCR & SPELLING PRECISION:
-   - Cross-reference ambiguous or low-resolution text in screenshots/PDFs against the brief context to prevent OCR mistakes (e.g., verify platform names like 'Listrak' vs 'Rentrak').
-
-7. VISUAL TRUNCATION CALIBRATION:
-   - Carefully review full-length email scroll mockups against ESP previews.
-   - DO NOT flag an email preview as 'truncated' or 'missing sections' unless visual content is genuinely cut off at the bottom or absent from the layout.
+4. CONVERSATIONAL SEGMENT TRANSLATION:
+   - Refer strictly to the provided ESP KNOWLEDGE BASE to mentally translate conversational phrases into logical ESP segment conditions before checking the screenshot.
 
 REQUIRED OUTPUT FORMAT:
 
@@ -124,7 +102,7 @@ REQUIRED OUTPUT FORMAT:
 - **Copy & Formatting:** [Pass / Specific Issues]
 - **Links & CTAs:** [Pass / Specific Issues]
 - **Segmentation & Suppressions (Itemized):** [List every target segment and suppression line-by-line]
-- **Audience Count Audit:** [Brief Count vs. ESP Schedule Count & Variance Analysis]
+- **Audience Count Audit:** [Note the expected drop due to suppressions]
 
 ### 🔧 Actionable Fix List
 [Numbered list of exact changes required]
@@ -135,6 +113,9 @@ REQUIRED OUTPUT FORMAT:
 # -----------------------------------------------------------------------------
 def inspect_preview_url(url):
     """Programmatically pings links and inspects preview HTML."""
+    if not url or url.strip() == "":
+        return "No URL provided."
+        
     report = []
     try:
         res = requests.get(url, timeout=10)
@@ -144,7 +125,7 @@ def inspect_preview_url(url):
         report.append(f"Total Links Found: {len(links)}")
         
         broken_links = []
-        for a in links[:15]:  # Sample first 15 links
+        for a in links[:15]: 
             href = a['href']
             if href.startswith('http'):
                 try:
@@ -163,15 +144,10 @@ def inspect_preview_url(url):
     return "\n".join(report)
 
 def prepare_asset_payload(uploaded_file):
-    """Prepares images or PDFs for Gemini using native API handling."""
     if uploaded_file is None:
         return None
-    
     if uploaded_file.type == "application/pdf":
-        return {
-            "mime_type": "application/pdf",
-            "data": uploaded_file.getvalue()
-        }
+        return {"mime_type": "application/pdf", "data": uploaded_file.getvalue()}
     else:
         return Image.open(uploaded_file)
 
@@ -200,7 +176,6 @@ with col2:
     esp_schedule = st.file_uploader("ESP Scheduling Screenshot/PDF (Segments & Audience Counts)", type=["png", "jpg", "jpeg", "pdf"])
 
 if st.button("🚀 Run Campaign Audit", type="primary"):
-    # Validate required fields
     missing_fields = []
     if not creative_mockup: missing_fields.append("Approved Creative Mockup")
     if not task_title.strip(): missing_fields.append("ClickUp Task Title")
@@ -214,10 +189,8 @@ if st.button("🚀 Run Campaign Audit", type="primary"):
     else:
         with st.spinner("Processing assets and running campaign audit..."):
             try:
-                # Append both the Knowledge Base and the System Prompt
                 prompt_payload = [ESP_KNOWLEDGE_BASE, SYSTEM_PROMPT]
                 
-                # Formatted Source of Truth payload
                 brief_payload = f"""
 SOURCE OF TRUTH BRIEF DATA:
 - ClickUp Task Title: {task_title}
@@ -229,28 +202,25 @@ SOURCE OF TRUTH BRIEF DATA:
 """
                 prompt_payload.append(brief_payload)
 
-                # 1. Add Creative Mockup
                 mockup_payload = prepare_asset_payload(creative_mockup)
                 if mockup_payload:
                     prompt_payload.append("\nAPPROVED CREATIVE MOCKUP ASSET:")
                     prompt_payload.append(mockup_payload)
                 
-                # 2. Add Live Preview URL & Scraped Data
-                if preview_url:
+                if preview_url and preview_url.strip() != "":
                     technical_link_data = inspect_preview_url(preview_url)
                     prompt_payload.append(f"\nPROGRAMMATIC LINK & HTML AUDIT DATA:\nURL: {preview_url}\n{technical_link_data}")
+                else:
+                    prompt_payload.append("\nPROGRAMMATIC LINK AUDIT DATA: None provided. Do not hallucinate links.")
                 
-                # 3. Add ESP Scheduling Asset
                 if esp_schedule:
                     schedule_payload = prepare_asset_payload(esp_schedule)
                     if schedule_payload:
                         prompt_payload.append("\nESP SCHEDULING & AUDIENCE ASSET:")
                         prompt_payload.append(schedule_payload)
                 
-                # 4. Execute Audit
                 response = run_gemini_audit(prompt_payload)
                 
-                # Render Results
                 st.markdown("---")
                 st.markdown(response.text)
 
