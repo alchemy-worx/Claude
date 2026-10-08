@@ -9,6 +9,7 @@ from bs4 import BeautifulSoup
 # -----------------------------------------------------------------------------
 st.set_page_config(page_title="Email QA Auditor", layout="wide")
 
+# Fetch API key securely from Streamlit Secrets
 api_key = st.secrets.get("GEMINI_API_KEY")
 if not api_key:
     st.error("Missing GEMINI_API_KEY in Streamlit Secrets.")
@@ -17,9 +18,10 @@ if not api_key:
 genai.configure(api_key=api_key)
 
 # -----------------------------------------------------------------------------
-# 2. MODEL EXECUTION ENGINE 
+# 2. MODEL EXECUTION ENGINE (Gemini 3.8 Flash Standard)
 # -----------------------------------------------------------------------------
 def run_gemini_audit(prompt_payload):
+    """Executes audit using active 3.x Flash series models with failover."""
     candidate_models = [
         'gemini-3.8-flash',
         'gemini-3.5-flash-lite',
@@ -39,7 +41,7 @@ def run_gemini_audit(prompt_payload):
     raise last_exception
 
 # -----------------------------------------------------------------------------
-# 3. KNOWLEDGE BASE & GUARDRAIL PROMPT
+# 3. KNOWLEDGE BASE & SYSTEM PROMPT
 # -----------------------------------------------------------------------------
 ESP_KNOWLEDGE_BASE = """
 === ESP SEGMENT & KEYWORD KNOWLEDGE BASE ===
@@ -66,7 +68,18 @@ ESP_KNOWLEDGE_BASE = """
 """
 
 SYSTEM_PROMPT = """
-You are an elite Digital Marketing & Email Campaign QA Auditor. Perform a rigorous, multi-point audit comparing the live campaign assets against the provided Source of Truth brief.
+You are an elite Digital Marketing & Email Campaign QA Auditor. Perform a rigorous, multi-point audit comparing campaign assets against the provided Source of Truth brief.
+
+DYNAMIC AUDIT MODES:
+
+MODE A: PRE-SCHEDULING QA (NO ESP SCHEDULING ASSET PROVIDED)
+- If the user DOES NOT provide an ESP Scheduling Screenshot/PDF, assume they are QA'ing assets BEFORE building or scheduling in the ESP.
+- Perform all creative and textual checks (Subject Line/Pre-header alignment between brief and creative mockup, Visual Layout, Copy & Formatting, Link Pings if URL provided).
+- Explicitly mark ESP-dependent checks (Send Date & Schedule Audit, ESP Segment Matching, Audience Count Audit) as "N/A - Pre-Scheduling QA (No ESP Asset Provided)".
+- DO NOT flag missing ESP data as a CRITICAL FAIL in Pre-Scheduling Mode.
+
+MODE B: POST-SCHEDULING AUDIT (ESP SCHEDULING ASSET PROVIDED)
+- If an ESP Scheduling Screenshot/PDF IS provided, perform a full multi-point audit including schedule timing, line-by-line segment translation, suppression matching, and audience count verification.
 
 STRICT AUDIT RULES & GUARDRAILS:
 
@@ -74,14 +87,13 @@ STRICT AUDIT RULES & GUARDRAILS:
    - If no live preview URL or programmatic link data is provided, explicitly state "N/A - No Preview URL provided" under Links & CTAs.
    - NEVER invent, guess, or hallucinate HTTP 404 errors or scanned links.
 
-2. GROSS VS. NET AUDIENCE COUNTS (DO NOT FALSE FLAG):
+2. GROSS VS. NET AUDIENCE COUNTS:
    - The segment count provided in the brief is usually the GROSS count. The audience count in the ESP schedule is the NET count (Gross minus Suppressions).
    - Therefore, the ESP count will almost ALWAYS be lower than the brief count. This is NORMAL.
    - Do NOT flag a lower ESP count as a failure. ONLY flag an anomaly if the ESP count is mysteriously HIGHER than the gross segment.
 
 3. FUZZY OCR MATCHING (SUPPRESSIONS):
-   - Screenshots of ESP suppression lists are often blurry. Use fuzzy matching to align the exclusions seen in the image with the suppressions requested in the brief (e.g., if you read 'Rentak', intelligently map it to the requested 'RevRoll').
-   - DO NOT combine multiple suppression lists into a single name. Read them individually.
+   - Screenshots of ESP suppression lists are often blurry. Use fuzzy matching to align exclusions in the image with suppressions requested in the brief.
 
 4. CONVERSATIONAL SEGMENT TRANSLATION:
    - Refer strictly to the provided ESP KNOWLEDGE BASE to mentally translate conversational phrases into logical ESP segment conditions before checking the screenshot.
@@ -96,13 +108,13 @@ REQUIRED OUTPUT FORMAT:
 | :--- | :--- | :--- | :--- | :--- |
 
 ### 📋 Detailed Audit Breakdown
-- **Send Date & Schedule Audit:** [Pass / Specific Issues]
+- **Send Date & Schedule Audit:** [Pass / Specific Issues / N/A - Pre-Scheduling QA]
 - **Subject Line & Pre-header Audit:** [Pass / Specific Issues]
 - **Visuals & Layout:** [Pass / Specific Issues]
 - **Copy & Formatting:** [Pass / Specific Issues]
-- **Links & CTAs:** [Pass / Specific Issues]
-- **Segmentation & Suppressions (Itemized):** [List every target segment and suppression line-by-line]
-- **Audience Count Audit:** [Note the expected drop due to suppressions]
+- **Links & CTAs:** [Pass / Specific Issues / N/A]
+- **Segmentation & Suppressions (Itemized):** [List every target segment and suppression / N/A - Pre-Scheduling QA]
+- **Audience Count Audit:** [Note expected drop due to suppressions / N/A - Pre-Scheduling QA]
 
 ### 🔧 Actionable Fix List
 [Numbered list of exact changes required]
@@ -161,7 +173,7 @@ col1, col2 = st.columns(2)
 
 with col1:
     st.subheader("1. Campaign Brief (Source of Truth)")
-    creative_mockup = st.file_uploader("Approved Creative Mockup (PNG, JPG, PDF)", type=["png", "jpg", "jpeg", "pdf"])
+    creative_mockup = st.file_uploader("Approved Creative Mockup (PNG, JPG, PDF) *", type=["png", "jpg", "jpeg", "pdf"])
     
     task_title = st.text_input("ClickUp Task Title *")
     send_datetime = st.text_input("Send Date / Time *")
@@ -171,9 +183,9 @@ with col1:
     other_notes = st.text_area("Other Notes (Optional)", height=80)
 
 with col2:
-    st.subheader("2. ESP Deployment Assets")
-    preview_url = st.text_input("Live ESP Test Preview URL")
-    esp_schedule = st.file_uploader("ESP Scheduling Screenshot/PDF (Segments & Audience Counts)", type=["png", "jpg", "jpeg", "pdf"])
+    st.subheader("2. ESP Deployment Assets (Optional for Pre-Scheduling QA)")
+    preview_url = st.text_input("Live ESP Test Preview URL (Optional)")
+    esp_schedule = st.file_uploader("ESP Scheduling Screenshot/PDF (Segments & Audience Counts) - Optional", type=["png", "jpg", "jpeg", "pdf"])
 
 if st.button("🚀 Run Campaign Audit", type="primary"):
     missing_fields = []
@@ -202,27 +214,11 @@ SOURCE OF TRUTH BRIEF DATA:
 """
                 prompt_payload.append(brief_payload)
 
+                # 1. Add Creative Mockup
                 mockup_payload = prepare_asset_payload(creative_mockup)
                 if mockup_payload:
                     prompt_payload.append("\nAPPROVED CREATIVE MOCKUP ASSET:")
                     prompt_payload.append(mockup_payload)
                 
-                if preview_url and preview_url.strip() != "":
-                    technical_link_data = inspect_preview_url(preview_url)
-                    prompt_payload.append(f"\nPROGRAMMATIC LINK & HTML AUDIT DATA:\nURL: {preview_url}\n{technical_link_data}")
-                else:
-                    prompt_payload.append("\nPROGRAMMATIC LINK AUDIT DATA: None provided. Do not hallucinate links.")
-                
-                if esp_schedule:
-                    schedule_payload = prepare_asset_payload(esp_schedule)
-                    if schedule_payload:
-                        prompt_payload.append("\nESP SCHEDULING & AUDIENCE ASSET:")
-                        prompt_payload.append(schedule_payload)
-                
-                response = run_gemini_audit(prompt_payload)
-                
-                st.markdown("---")
-                st.markdown(response.text)
-
-            except Exception as e:
-                st.error(f"An error occurred during the audit execution: {str(e)}")
+                # 2. Add Live Preview URL & Scraped Data (Optional)
+                if preview_url and preview_url.
