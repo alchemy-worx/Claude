@@ -221,4 +221,29 @@ SOURCE OF TRUTH BRIEF DATA:
                     prompt_payload.append(mockup_payload)
                 
                 # 2. Add Live Preview URL & Scraped Data (Optional)
-                if preview_url and preview_url.
+                if preview_url and preview_url.strip() != "":
+                    technical_link_data = inspect_preview_url(preview_url)
+                    prompt_payload.append(f"\nPROGRAMMATIC LINK & HTML AUDIT DATA:\nURL: {preview_url}\n{technical_link_data}")
+                else:
+                    prompt_payload.append("\nPROGRAMMATIC LINK AUDIT DATA: None provided. Do not hallucinate links.")
+                
+                # 3. Add ESP Scheduling Asset (Optional)
+                if esp_schedule:
+                    schedule_payload = prepare_asset_payload(esp_schedule)
+                    if schedule_payload:
+                        prompt_payload.append("\nESP SCHEDULING & AUDIENCE ASSET:")
+                        prompt_payload.append(schedule_payload)
+                        prompt_payload.append("\nAUDIT MODE: Post-Scheduling Mode (Perform complete ESP matching).")
+                else:
+                    prompt_payload.append("\nESP SCHEDULING & AUDIENCE ASSET: None provided.")
+                    prompt_payload.append("\nAUDIT MODE: Pre-Scheduling Mode Active. Skip ESP schedule/segment matching and mark those sections as N/A - Pre-Scheduling QA.")
+                
+                # 4. Execute Audit
+                response = run_gemini_audit(prompt_payload)
+                
+                # Render Results
+                st.markdown("---")
+                st.markdown(response.text)
+
+            except Exception as e:
+                st.error(f"An error occurred during the audit execution: {str(e)}")
